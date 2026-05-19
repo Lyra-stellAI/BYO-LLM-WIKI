@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Web Reading Assistant</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>Web Reading Assistant</h1>
+      <p class="subtitle">Search the web or paste a URL to summarize a page.</p>
+    </header>
+
+    <section class="controls">
+      <div class="input-row">
+        <input
+          id="query"
+          type="text"
+          placeholder="Type a search query, or paste a URL to summarize…"
+          autocomplete="off"
+          autofocus
+        />
+        <button id="searchBtn" class="btn btn-primary">Search</button>
+        <button id="summarizeBtn" class="btn btn-secondary">Summarize</button>
+      </div>
+      <p class="hint">
+        Tip: Press <kbd>Enter</kbd> to search, <kbd>Shift</kbd>+<kbd>Enter</kbd> to summarize.
+      </p>
+    </section>
+
+    <section id="status" class="status hidden"></section>
+    <section id="results" class="results"></section>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
