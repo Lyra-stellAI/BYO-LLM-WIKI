@@ -4,6 +4,12 @@ const searchBtn = $("#searchBtn");
 const summarizeBtn = $("#summarizeBtn");
 const statusEl = $("#status");
 const resultsEl = $("#results");
+const providerEl = $("#provider");
+const modelEl = $("#model");
+const modelListEl = $("#model-suggestions");
+const providerStatusEl = $("#providerStatus");
+
+let providerInfo = {};
 
 function escapeHTML(str = "") {
   return str
@@ -69,10 +75,13 @@ function renderSummary(data) {
   const sourceLine = data.url
     ? `Source: <a href="${escapeHTML(data.url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(data.url)}</a>`
     : "";
+  const badge = data.engine === "ai"
+    ? `AI · ${escapeHTML(data.provider)}${data.model ? " · " + escapeHTML(data.model) : ""}`
+    : "Extractive summary";
   resultsEl.innerHTML = `
     <article class="summary-card">
       <div class="meta">
-        <span class="badge">${data.engine === "claude" ? "AI summary" : "Extractive summary"}</span>
+        <span class="badge">${badge}</span>
         <span>${data.chars.toLocaleString()} chars analyzed</span>
         ${sourceLine ? `<span>${sourceLine}</span>` : ""}
       </div>
@@ -80,6 +89,68 @@ function renderSummary(data) {
       <div class="summary-body">${escapeHTML(data.summary)}</div>
     </article>
   `;
+}
+
+async function loadProviders() {
+  try {
+    const res = await fetch("/api/providers");
+    const data = await res.json();
+    providerInfo = data.providers || {};
+    updateModelSuggestions();
+    updateProviderStatus();
+  } catch (e) {
+    providerStatusEl.textContent = "Could not load provider info.";
+  }
+}
+
+function updateModelSuggestions() {
+  const p = providerEl.value;
+  modelListEl.innerHTML = "";
+  if (p === "auto" || p === "extractive") {
+    modelEl.value = "";
+    modelEl.placeholder = p === "auto" ? "auto" : "(not used)";
+    modelEl.disabled = (p === "extractive");
+    return;
+  }
+  modelEl.disabled = false;
+  const info = providerInfo[p];
+  if (!info) return;
+  for (const m of info.models) {
+    const opt = document.createElement("option");
+    opt.value = m;
+    modelListEl.appendChild(opt);
+  }
+  modelEl.value = info.default_model;
+  modelEl.placeholder = info.default_model;
+}
+
+function updateProviderStatus() {
+  const p = providerEl.value;
+  if (p === "extractive") {
+    providerStatusEl.textContent = "No API key needed.";
+    providerStatusEl.className = "provider-status ok";
+    return;
+  }
+  if (p === "auto") {
+    const ready = Object.entries(providerInfo)
+      .filter(([, v]) => v.configured).map(([k]) => k);
+    if (ready.length) {
+      providerStatusEl.textContent = `Ready: ${ready.join(", ")}`;
+      providerStatusEl.className = "provider-status ok";
+    } else {
+      providerStatusEl.textContent = "No keys set — will use extractive.";
+      providerStatusEl.className = "provider-status warn";
+    }
+    return;
+  }
+  const info = providerInfo[p];
+  if (info && info.configured) {
+    providerStatusEl.textContent = `${info.env_key} detected.`;
+    providerStatusEl.className = "provider-status ok";
+  } else if (info) {
+    providerStatusEl.textContent = `Set ${info.env_key} to use ${p}.`;
+    providerStatusEl.className = "provider-status warn";
+  }
 }
 
 async function doSearch() {
@@ -104,7 +175,11 @@ async function doSummarize() {
   clearStatus(); resultsEl.innerHTML = ""; setBusy(true);
   setStatus(`<span class="spinner"></span>Reading and summarizing…`);
   try {
-    const data = await postJSON("/api/summarize", { input });
+    const data = await postJSON("/api/summarize", {
+      input,
+      provider: providerEl.value,
+      model: modelEl.value.trim(),
+    });
     clearStatus();
     renderSummary(data);
   } catch (e) {
@@ -116,6 +191,10 @@ async function doSummarize() {
 
 searchBtn.addEventListener("click", doSearch);
 summarizeBtn.addEventListener("click", doSummarize);
+providerEl.addEventListener("change", () => {
+  updateModelSuggestions();
+  updateProviderStatus();
+});
 
 queryEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
@@ -124,3 +203,5 @@ queryEl.addEventListener("keydown", (e) => {
     else doSearch();
   }
 });
+
+loadProviders();

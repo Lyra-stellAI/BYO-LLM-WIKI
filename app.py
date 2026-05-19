@@ -12,6 +12,11 @@ except ImportError:
     Anthropic = None
 
 try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
+
+try:
     from ddgs import DDGS
 except ImportError:
     DDGS = None
@@ -24,6 +29,43 @@ USER_AGENT = (
 )
 REQUEST_TIMEOUT = 15
 MAX_CHARS_FOR_MODEL = 16000
+
+PROVIDERS = {
+    "anthropic": {
+        "label": "Anthropic (Claude)",
+        "env_key": "ANTHROPIC_API_KEY",
+        "default_model": "claude-haiku-4-5-20251001",
+        "models": [
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-6",
+            "claude-opus-4-7",
+        ],
+    },
+    "openai": {
+        "label": "OpenAI",
+        "env_key": "OPENAI_API_KEY",
+        "base_url_env": "OPENAI_BASE_URL",
+        "base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-4o-mini",
+        "models": ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"],
+    },
+    "qwen": {
+        "label": "Qwen (DashScope)",
+        "env_key": "DASHSCOPE_API_KEY",
+        "base_url_env": "QWEN_BASE_URL",
+        "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "default_model": "qwen-plus",
+        "models": ["qwen-plus", "qwen-turbo", "qwen-max", "qwen2.5-72b-instruct"],
+    },
+    "deepseek": {
+        "label": "DeepSeek",
+        "env_key": "DEEPSEEK_API_KEY",
+        "base_url_env": "DEEPSEEK_BASE_URL",
+        "base_url": "https://api.deepseek.com",
+        "default_model": "deepseek-chat",
+        "models": ["deepseek-chat", "deepseek-reasoner"],
+    },
+}
 
 
 def is_valid_url(text: str) -> bool:
@@ -81,24 +123,59 @@ def extractive_summary(text: str, max_sentences: int = 6) -> str:
     return " ".join(s for _, (_, s) in ranked)
 
 
-def claude_summary(title: str, url: str, text: str) -> str | None:
-    if Anthropic is None or not os.environ.get("ANTHROPIC_API_KEY"):
-        return None
-    client = Anthropic()
+def build_prompt(title: str, url: str, text: str) -> str:
     snippet = text[:MAX_CHARS_FOR_MODEL]
+    return (
+        f"Summarize the following web page in clear, concise prose. "
+        f"Start with a one-sentence TL;DR, then 3-6 bullet points of key takeaways.\n\n"
+        f"Title: {title}\nURL: {url}\n\nContent:\n{snippet}"
+    )
+
+
+def anthropic_summary(model: str, title: str, url: str, text: str) -> str:
+    if Anthropic is None:
+        raise RuntimeError("anthropic package is not installed.")
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise RuntimeError("ANTHROPIC_API_KEY is not set.")
+    client = Anthropic()
     msg = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=model,
         max_tokens=1024,
-        messages=[{
-            "role": "user",
-            "content": (
-                f"Summarize the following web page in clear, concise prose. "
-                f"Start with a one-sentence TL;DR, then 3-6 bullet points of key takeaways.\n\n"
-                f"Title: {title}\nURL: {url}\n\nContent:\n{snippet}"
-            ),
-        }],
+        messages=[{"role": "user", "content": build_prompt(title, url, text)}],
     )
     return "".join(block.text for block in msg.content if hasattr(block, "text"))
+
+
+def openai_compatible_summary(provider: str, model: str, title: str, url: str, text: str) -> str:
+    if OpenAI is None:
+        raise RuntimeError("openai package is not installed.")
+    config = PROVIDERS[provider]
+    api_key = os.environ.get(config["env_key"])
+    if not api_key:
+        raise RuntimeError(f"{config['env_key']} is not set.")
+    base_url = os.environ.get(config["base_url_env"], config["base_url"])
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=1024,
+        messages=[{"role": "user", "content": build_prompt(title, url, text)}],
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
+def generate_ai_summary(provider: str, model: str, title: str, url: str, text: str) -> str:
+    if provider == "anthropic":
+        return anthropic_summary(model, title, url, text)
+    if provider in ("openai", "qwen", "deepseek"):
+        return openai_compatible_summary(provider, model, title, url, text)
+    raise ValueError(f"Unknown provider: {provider}")
+
+
+def first_available_provider() -> str | None:
+    for name, cfg in PROVIDERS.items():
+        if os.environ.get(cfg["env_key"]):
+            return name
+    return None
 
 
 def web_search(query: str, max_results: int = 8) -> list[dict]:
@@ -120,6 +197,20 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/api/providers")
+def api_providers():
+    payload = {}
+    for name, cfg in PROVIDERS.items():
+        payload[name] = {
+            "label": cfg["label"],
+            "default_model": cfg["default_model"],
+            "models": cfg["models"],
+            "configured": bool(os.environ.get(cfg["env_key"])),
+            "env_key": cfg["env_key"],
+        }
+    return jsonify({"providers": payload, "auto": first_available_provider()})
+
+
 @app.route("/api/search", methods=["POST"])
 def api_search():
     data = request.get_json(silent=True) or {}
@@ -137,6 +228,9 @@ def api_search():
 def api_summarize():
     data = request.get_json(silent=True) or {}
     target = (data.get("input") or "").strip()
+    provider = (data.get("provider") or "auto").strip().lower()
+    model = (data.get("model") or "").strip()
+
     if not target:
         return jsonify({"error": "Provide a URL or paste text to summarize."}), 400
 
@@ -150,17 +244,34 @@ def api_summarize():
         if len(text) < 100:
             return jsonify({"error": "Not enough content to summarize."}), 400
 
-        summary = claude_summary(title, url, text)
-        engine = "claude"
-        if not summary:
-            summary = extractive_summary(text)
-            engine = "extractive"
+        if provider == "extractive":
+            return jsonify({
+                "title": title, "url": url,
+                "summary": extractive_summary(text),
+                "engine": "extractive", "provider": "extractive", "model": "",
+                "chars": len(text),
+            })
+
+        if provider == "auto":
+            provider = first_available_provider() or ""
+
+        if provider in PROVIDERS:
+            chosen_model = model or PROVIDERS[provider]["default_model"]
+            try:
+                summary = generate_ai_summary(provider, chosen_model, title, url, text)
+                return jsonify({
+                    "title": title, "url": url,
+                    "summary": summary,
+                    "engine": "ai", "provider": provider, "model": chosen_model,
+                    "chars": len(text),
+                })
+            except RuntimeError as e:
+                return jsonify({"error": str(e)}), 400
 
         return jsonify({
-            "title": title,
-            "url": url,
-            "summary": summary,
-            "engine": engine,
+            "title": title, "url": url,
+            "summary": extractive_summary(text),
+            "engine": "extractive", "provider": "extractive", "model": "",
             "chars": len(text),
         })
     except requests.HTTPError as e:

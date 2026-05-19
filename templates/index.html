@@ -14,6 +14,26 @@
     </header>
 
     <section class="controls">
+      <div class="settings-row">
+        <label class="field">
+          <span class="field-label">Provider</span>
+          <select id="provider">
+            <option value="auto">Auto (first available key)</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="openai">OpenAI</option>
+            <option value="qwen">Qwen (DashScope)</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="extractive">Extractive (no AI)</option>
+          </select>
+        </label>
+        <label class="field field-grow">
+          <span class="field-label">Model ID</span>
+          <input id="model" type="text" list="model-suggestions" placeholder="auto" autocomplete="off" />
+          <datalist id="model-suggestions"></datalist>
+        </label>
+        <span id="providerStatus" class="provider-status"></span>
+      </div>
+
       <div class="input-row">
         <input
           id="query"
@@ -27,6 +47,7 @@
       </div>
       <p class="hint">
         Tip: Press <kbd>Enter</kbd> to search, <kbd>Shift</kbd>+<kbd>Enter</kbd> to summarize.
+        The model field accepts any model ID the provider supports.
       </p>
     </section>
 

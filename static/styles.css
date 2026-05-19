@@ -42,6 +42,57 @@ header h1 {
   margin: 0 0 32px;
 }
 
+.controls .settings-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  margin-bottom: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 180px;
+}
+
+.field-grow { flex: 1 1 220px; }
+
+.field-label {
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.field select,
+.field input[type="text"] {
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.92rem;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+
+.field select:focus,
+.field input[type="text"]:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(91, 157, 255, 0.15);
+}
+
+.provider-status {
+  font-size: 0.8rem;
+  color: var(--muted);
+  padding-bottom: 10px;
+}
+
+.provider-status.ok { color: var(--success); }
+.provider-status.warn { color: #fbbf24; }
+
 .controls .input-row {
   display: flex;
   gap: 8px;
