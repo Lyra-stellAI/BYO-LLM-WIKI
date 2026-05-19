@@ -10,51 +10,137 @@
   <main class="container">
     <header>
       <h1>Web Reading Assistant</h1>
-      <p class="subtitle">Search the web or paste a URL to summarize a page.</p>
+      <p class="subtitle">Search, summarize, and grow a curated knowledge graph.</p>
     </header>
 
-    <section class="controls">
-      <div class="settings-row">
-        <label class="field">
-          <span class="field-label">Provider</span>
-          <select id="provider">
-            <option value="auto">Auto (first available key)</option>
-            <option value="anthropic">Anthropic (Claude)</option>
-            <option value="openai">OpenAI</option>
-            <option value="qwen">Qwen (DashScope)</option>
-            <option value="deepseek">DeepSeek</option>
-            <option value="extractive">Extractive (no AI)</option>
-          </select>
-        </label>
-        <label class="field field-grow">
-          <span class="field-label">Model ID</span>
-          <input id="model" type="text" list="model-suggestions" placeholder="auto" autocomplete="off" />
-          <datalist id="model-suggestions"></datalist>
-        </label>
-        <span id="providerStatus" class="provider-status"></span>
+    <nav class="tabs">
+      <button class="tab active" data-tab="read">Read</button>
+      <button class="tab" data-tab="kg">Knowledge Graph <span id="tabCount" class="tab-count hidden"></span></button>
+    </nav>
+
+    <section id="tab-read" class="tab-panel active">
+      <div class="controls">
+        <div class="settings-row">
+          <label class="field">
+            <span class="field-label">Provider</span>
+            <select id="provider">
+              <option value="auto">Auto (first available key)</option>
+              <option value="anthropic">Anthropic (Claude)</option>
+              <option value="openai">OpenAI</option>
+              <option value="qwen">Qwen (DashScope)</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="extractive">Extractive (no AI)</option>
+            </select>
+          </label>
+          <label class="field field-grow">
+            <span class="field-label">Model ID</span>
+            <input id="model" type="text" list="model-suggestions" placeholder="auto" autocomplete="off" />
+            <datalist id="model-suggestions"></datalist>
+          </label>
+          <span id="providerStatus" class="provider-status"></span>
+        </div>
+
+        <div class="input-row">
+          <input
+            id="query"
+            type="text"
+            placeholder="Search the web, paste a URL to summarize, or paste text to save…"
+            autocomplete="off"
+            autofocus
+          />
+          <button id="searchBtn" class="btn btn-primary">Search</button>
+          <button id="summarizeBtn" class="btn btn-secondary">Summarize</button>
+          <button id="addKgBtn" class="btn btn-accent">+ KG</button>
+        </div>
+        <p class="hint">
+          Press <kbd>Enter</kbd> to search, <kbd>Shift</kbd>+<kbd>Enter</kbd> to summarize.
+          Highlight any text in a summary to save it to the graph.
+        </p>
       </div>
 
-      <div class="input-row">
-        <input
-          id="query"
-          type="text"
-          placeholder="Type a search query, or paste a URL to summarize…"
-          autocomplete="off"
-          autofocus
-        />
-        <button id="searchBtn" class="btn btn-primary">Search</button>
-        <button id="summarizeBtn" class="btn btn-secondary">Summarize</button>
-      </div>
-      <p class="hint">
-        Tip: Press <kbd>Enter</kbd> to search, <kbd>Shift</kbd>+<kbd>Enter</kbd> to summarize.
-        The model field accepts any model ID the provider supports.
-      </p>
+      <section id="status" class="status hidden"></section>
+      <section id="results" class="results"></section>
     </section>
 
-    <section id="status" class="status hidden"></section>
-    <section id="results" class="results"></section>
+    <section id="tab-kg" class="tab-panel">
+      <div class="kg-toolbar">
+        <input id="kgQuery" type="text" placeholder="Search the knowledge graph…" />
+        <button id="kgSearchBtn" class="btn btn-secondary">Search</button>
+        <button id="kgRefresh" class="btn btn-secondary">Refresh</button>
+      </div>
+
+      <div class="kg-summary">
+        <div class="kg-stat"><span id="currentChunks">0</span> staged</div>
+        <div class="kg-stat"><span id="overallChunks">0</span> integrated</div>
+        <div class="kg-stat"><span id="overallEntities">0</span> entities</div>
+        <div class="kg-stat"><span id="overallEdges">0</span> edges</div>
+      </div>
+
+      <div class="kg-layout">
+        <aside class="kg-sidebar">
+          <div class="kg-section">
+            <div class="kg-section-head">
+              <h3>Staging (current)</h3>
+              <button id="integrateBtn" class="btn btn-primary btn-sm">Integrate →</button>
+            </div>
+            <div id="currentList" class="kg-list"></div>
+          </div>
+          <div class="kg-section">
+            <div class="kg-section-head">
+              <h3>Integrated chunks</h3>
+            </div>
+            <div id="overallList" class="kg-list"></div>
+          </div>
+        </aside>
+        <div class="kg-main">
+          <div id="kgGraph" class="kg-graph"></div>
+          <div id="kgDetail" class="kg-detail empty">
+            Click a node in the graph or a chunk in the sidebar to see details.
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
 
+  <div id="kgModal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-content">
+      <h2>Add to Knowledge Graph</h2>
+      <label class="form-field">
+        <span>Text</span>
+        <textarea id="mText" rows="6"></textarea>
+      </label>
+      <div class="form-row">
+        <label class="form-field">
+          <span>Source title</span>
+          <input id="mTitle" type="text" />
+        </label>
+        <label class="form-field">
+          <span>Source URL</span>
+          <input id="mUrl" type="text" />
+        </label>
+      </div>
+      <label class="form-field">
+        <span>Tags (comma-separated)</span>
+        <input id="mTags" type="text" placeholder="e.g. AI, knowledge graphs" />
+      </label>
+      <label class="form-field">
+        <span>Note (optional)</span>
+        <textarea id="mNote" rows="2" placeholder="Why this chunk matters, what to remember…"></textarea>
+      </label>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" data-close>Cancel</button>
+        <button id="mSave" class="btn btn-primary">Save to staging</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="selectionMenu" class="selection-menu hidden">
+    <button id="saveSelection">＋ Save to KG</button>
+  </div>
+
+  <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='kg.js') }}"></script>
 </body>
 </html>

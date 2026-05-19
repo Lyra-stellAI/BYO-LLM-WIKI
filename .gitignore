@@ -10,3 +10,5 @@ env/
 .DS_Store
 .idea/
 .vscode/
+data/*.json
+data/*.tmp

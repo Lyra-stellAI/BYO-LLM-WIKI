@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from urllib.parse import urlparse
@@ -5,6 +6,8 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify, render_template, request
+
+import knowledge_graph as kg
 
 try:
     from anthropic import Anthropic
@@ -280,6 +283,132 @@ def api_summarize():
         return jsonify({"error": f"Could not fetch page: {e}"}), 502
     except Exception as e:
         return jsonify({"error": f"Summarization failed: {e}"}), 500
+
+
+ENTITY_PROMPT = """Extract 3-8 important named entities or key concepts from the text below.
+
+Return ONLY a JSON array. Each item must be an object with:
+- "name": short canonical form (1-4 words)
+- "kind": one of "person", "organization", "place", "concept", "technology", "event"
+- "confidence": one of "EXTRACTED" (named explicitly), "INFERRED" (strongly implied), "AMBIGUOUS"
+
+Text:
+{text}
+
+Return only the JSON array, no prose:"""
+
+
+def _parse_json_array(text: str) -> list:
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    m = re.search(r"\[.*\]", text, re.DOTALL)
+    if not m:
+        return []
+    try:
+        out = json.loads(m.group())
+        return out if isinstance(out, list) else []
+    except Exception:
+        return []
+
+
+def extract_entities_llm(text: str, provider: str, model: str) -> list:
+    prompt = ENTITY_PROMPT.format(text=text[:6000])
+    if provider == "anthropic":
+        if Anthropic is None or not os.environ.get("ANTHROPIC_API_KEY"):
+            return []
+        client = Anthropic()
+        msg = client.messages.create(
+            model=model,
+            max_tokens=600,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        out = "".join(b.text for b in msg.content if hasattr(b, "text"))
+    elif provider in PROVIDERS and OpenAI is not None:
+        config = PROVIDERS[provider]
+        api_key = os.environ.get(config["env_key"])
+        if not api_key:
+            return []
+        client = OpenAI(
+            api_key=api_key,
+            base_url=os.environ.get(config["base_url_env"], config["base_url"]),
+        )
+        resp = client.chat.completions.create(
+            model=model,
+            max_tokens=600,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        out = resp.choices[0].message.content or ""
+    else:
+        return []
+    return _parse_json_array(out)
+
+
+@app.route("/api/kg/stats")
+def api_kg_stats():
+    return jsonify(kg.stats())
+
+
+@app.route("/api/kg/graph")
+def api_kg_graph():
+    where = request.args.get("where", "current")
+    return jsonify(kg.get_graph(where))
+
+
+@app.route("/api/kg/add", methods=["POST"])
+def api_kg_add():
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    if len(text) < 5:
+        return jsonify({"error": "Text is required."}), 400
+    chunk = kg.add_chunk(
+        text,
+        source_url=(data.get("source_url") or "").strip(),
+        source_title=(data.get("source_title") or "").strip(),
+        tags=data.get("tags") if isinstance(data.get("tags"), list) else None,
+        note=(data.get("note") or "").strip(),
+    )
+    return jsonify({"chunk": chunk, "stats": kg.stats()})
+
+
+@app.route("/api/kg/integrate", methods=["POST"])
+def api_kg_integrate():
+    data = request.get_json(silent=True) or {}
+    use_ai = bool(data.get("use_ai", True))
+    provider = (data.get("provider") or "auto").strip().lower()
+    model = (data.get("model") or "").strip()
+
+    extract_fn = None
+    used_provider = "heuristic"
+    used_model = ""
+    if use_ai:
+        actual = provider if provider in PROVIDERS else first_available_provider()
+        if actual:
+            actual_model = model or PROVIDERS[actual]["default_model"]
+            used_provider, used_model = actual, actual_model
+            extract_fn = lambda t: extract_entities_llm(t, actual, actual_model)
+
+    result = kg.integrate(extract_fn=extract_fn)
+    result["provider_used"] = used_provider
+    result["model_used"] = used_model
+    result["stats"] = kg.stats()
+    return jsonify(result)
+
+
+@app.route("/api/kg/node/<node_id>", methods=["DELETE"])
+def api_kg_delete(node_id):
+    where = request.args.get("where", "current")
+    removed = kg.remove_node(node_id, where=where)
+    return jsonify({"removed": removed, "stats": kg.stats()})
+
+
+@app.route("/api/kg/query", methods=["POST"])
+def api_kg_query():
+    data = request.get_json(silent=True) or {}
+    q = (data.get("query") or "").strip()
+    where = data.get("where", "overall")
+    nodes = kg.query(q, where=where)
+    return jsonify({"results": nodes, "query": q, "where": where})
 
 
 if __name__ == "__main__":

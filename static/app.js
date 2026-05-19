@@ -205,3 +205,72 @@ queryEl.addEventListener("keydown", (e) => {
 });
 
 loadProviders();
+
+document.querySelectorAll(".tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    const target = tab.dataset.tab;
+    document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
+    document.querySelectorAll(".tab-panel").forEach((p) => {
+      p.classList.toggle("active", p.id === `tab-${target}`);
+    });
+    if (target === "kg" && window.kg && window.kg.refresh) window.kg.refresh();
+  });
+});
+
+const addKgBtn = $("#addKgBtn");
+addKgBtn.addEventListener("click", () => {
+  const text = queryEl.value.trim();
+  if (!text) {
+    setStatus("Type or paste a chunk of text first, then click + KG.", "error");
+    return;
+  }
+  const summaryCard = resultsEl.querySelector(".summary-card");
+  const title = summaryCard?.querySelector("h2")?.textContent || "";
+  const link = summaryCard?.querySelector(".meta a")?.href || "";
+  window.kg.openModal({ text, source_title: title, source_url: link });
+});
+
+const selectionMenu = $("#selectionMenu");
+const saveSelectionBtn = $("#saveSelection");
+let pendingSelection = null;
+
+function hideSelectionMenu() {
+  selectionMenu.classList.add("hidden");
+  pendingSelection = null;
+}
+
+function showSelectionMenu(selection) {
+  const range = selection.getRangeAt(0);
+  const rect = range.getBoundingClientRect();
+  const top = window.scrollY + rect.top - 40;
+  const left = window.scrollX + rect.left + rect.width / 2 - 72;
+  selectionMenu.style.top = `${Math.max(top, window.scrollY + 8)}px`;
+  selectionMenu.style.left = `${Math.max(left, 8)}px`;
+  selectionMenu.classList.remove("hidden");
+}
+
+document.addEventListener("mouseup", () => {
+  setTimeout(() => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return hideSelectionMenu();
+    const text = sel.toString().trim();
+    if (text.length < 20) return hideSelectionMenu();
+    const anchor = sel.anchorNode;
+    if (!anchor || !resultsEl.contains(anchor)) return hideSelectionMenu();
+    pendingSelection = text;
+    showSelectionMenu(sel);
+  }, 0);
+});
+
+document.addEventListener("mousedown", (e) => {
+  if (!selectionMenu.contains(e.target)) hideSelectionMenu();
+});
+
+saveSelectionBtn.addEventListener("click", () => {
+  if (!pendingSelection) return;
+  const summaryCard = resultsEl.querySelector(".summary-card");
+  const title = summaryCard?.querySelector("h2")?.textContent || "";
+  const link = summaryCard?.querySelector(".meta a")?.href || "";
+  window.kg.openModal({ text: pendingSelection, source_title: title, source_url: link });
+  hideSelectionMenu();
+});
