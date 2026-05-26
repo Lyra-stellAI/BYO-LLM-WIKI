@@ -1,4 +1,4 @@
-# Web Reading Assistant
+# Web browser agent
 
 A lightweight Flask web app that helps you read the web faster and
 incrementally build a personal knowledge graph:
