@@ -287,42 +287,77 @@ def api_summarize():
         return jsonify({"error": f"Summarization failed: {e}"}), 500
 
 
-ENTITY_PROMPT = """Extract 3-8 important named entities or key concepts from the text below.
+ENTITY_PROMPT = """You are extracting a knowledge graph from a passage of text.
 
-Return ONLY a JSON array. Each item must be an object with:
-- "name": short canonical form (1-4 words)
-- "kind": one of "person", "organization", "place", "concept", "technology", "event"
-- "confidence": one of "EXTRACTED" (named explicitly), "INFERRED" (strongly implied), "AMBIGUOUS"
+Identify the 8-15 MOST IMPORTANT entities — the named people, organizations,
+places, products, technologies, methods, frameworks, or concepts that this
+passage is actually ABOUT. Skip generic terms and sentence-starting words
+like "In", "When", "Round". Prefer multi-word canonical names.
+
+Then identify the SEMANTIC RELATIONSHIPS between those entities — who did
+what to whom, what depends on what, what is a part of what. These triples
+are what makes a knowledge graph useful.
+
+Return ONLY a JSON object with this exact shape:
+
+{{
+  "entities": [
+    {{
+      "name": "short canonical form (1-5 words, Title Case)",
+      "kind": "person | organization | place | concept | technology | method | event | product",
+      "importance": 1-5,
+      "confidence": "EXTRACTED | INFERRED | AMBIGUOUS"
+    }}
+  ],
+  "relations": [
+    {{
+      "source": "<entity name as above>",
+      "target": "<entity name as above>",
+      "predicate": "short active-voice verb phrase (1-4 words)",
+      "confidence": "EXTRACTED | INFERRED | AMBIGUOUS"
+    }}
+  ]
+}}
+
+Rules:
+- Entity names in `relations` MUST exactly match names in `entities`.
+- At least half the entities should appear in at least one relation.
+- Predicates should be specific and meaningful (e.g. "expands prompt into",
+  "evaluates output of", "replaces", "depends on"), not generic ("mentions",
+  "related to", "is").
 
 Text:
+\"\"\"
 {text}
+\"\"\"
 
-Return only the JSON array, no prose:"""
+Return only the JSON object, no prose:"""
 
 
-def _parse_json_array(text: str) -> list:
+def _parse_json_object(text: str) -> dict:
     text = text.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
-    m = re.search(r"\[.*\]", text, re.DOTALL)
+    m = re.search(r"\{.*\}", text, re.DOTALL)
     if not m:
-        return []
+        return {}
     try:
         out = json.loads(m.group())
-        return out if isinstance(out, list) else []
+        return out if isinstance(out, dict) else {}
     except Exception:
-        return []
+        return {}
 
 
-def extract_entities_llm(text: str, provider: str, model: str) -> list:
-    prompt = ENTITY_PROMPT.format(text=text[:6000])
+def extract_kg_llm(text: str, provider: str, model: str) -> dict:
+    """Returns {'entities': [...], 'relations': [...]}."""
+    prompt = ENTITY_PROMPT.format(text=text[:8000])
     if provider == "anthropic":
         if Anthropic is None or not os.environ.get("ANTHROPIC_API_KEY"):
-            return []
+            return {}
         client = Anthropic()
         msg = client.messages.create(
             model=model,
-            max_tokens=600,
+            max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
         out = "".join(b.text for b in msg.content if hasattr(b, "text"))
@@ -330,20 +365,25 @@ def extract_entities_llm(text: str, provider: str, model: str) -> list:
         config = PROVIDERS[provider]
         api_key = os.environ.get(config["env_key"])
         if not api_key:
-            return []
+            return {}
         client = OpenAI(
             api_key=api_key,
             base_url=os.environ.get(config["base_url_env"], config["base_url"]),
         )
         resp = client.chat.completions.create(
             model=model,
-            max_tokens=600,
+            max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
         out = resp.choices[0].message.content or ""
     else:
-        return []
-    return _parse_json_array(out)
+        return {}
+    parsed = _parse_json_object(out)
+    if not isinstance(parsed.get("entities"), list):
+        parsed["entities"] = []
+    if not isinstance(parsed.get("relations"), list):
+        parsed["relations"] = []
+    return parsed
 
 
 @app.route("/api/kg/stats")
@@ -388,7 +428,7 @@ def api_kg_integrate():
         if actual:
             actual_model = model or PROVIDERS[actual]["default_model"]
             used_provider, used_model = actual, actual_model
-            extract_fn = lambda t: extract_entities_llm(t, actual, actual_model)
+            extract_fn = lambda t: extract_kg_llm(t, actual, actual_model)
 
     result = kg.integrate(extract_fn=extract_fn)
     result["provider_used"] = used_provider

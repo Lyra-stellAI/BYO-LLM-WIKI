@@ -198,11 +198,19 @@
       title: (n.text || n.name || n.id || "").slice(0, 400),
       value: n.mentions || 1,
     }));
-    const visEdges = graph.edges.map((e) => ({
-      id: e.id, from: e.from, to: e.to, label: e.label,
-      arrows: "to",
-      dashes: e.confidence === "INFERRED" || e.confidence === "AMBIGUOUS",
-    }));
+    const visEdges = graph.edges.map((e) => {
+      const isRel = e.kind === "relation";
+      return {
+        id: e.id, from: e.from, to: e.to, label: e.label,
+        arrows: "to",
+        dashes: !isRel && (e.confidence === "INFERRED" || e.confidence === "AMBIGUOUS"),
+        color: isRel ? { color: "#7c5bff", highlight: "#9d83ff" } : { color: "#2d3a52", highlight: "#5b9dff" },
+        width: isRel ? 2 : 1,
+        font: isRel
+          ? { color: "#c4b5ff", size: 11, strokeWidth: 0, align: "middle" }
+          : { color: "#8b98ab", size: 10, strokeWidth: 0, align: "middle" },
+      };
+    });
     const data = { nodes: new vis.DataSet(visNodes), edges: new vis.DataSet(visEdges) };
     const options = {
       nodes: {

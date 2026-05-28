@@ -116,19 +116,140 @@ STOPWORDS = {
     "How", "Why", "But", "And", "For", "With", "From", "Into", "Their", "Some", "Most",
     "Many", "More", "Less", "It", "Its", "An", "A", "Is", "Are", "Was", "Were", "Be",
     "Been", "Being", "Have", "Has", "Had", "Will", "Would", "Could", "Should", "May",
-    "Might", "Must", "Shall", "Can", "Cannot",
+    "Might", "Must", "Shall", "Can", "Cannot", "In", "On", "At", "By", "To", "Of",
+    "If", "As", "So", "Or", "Not", "Now", "Then", "Also", "Just", "Even", "Still",
+    "Yet", "After", "Before", "While", "Because", "Since", "Until", "Round", "Part",
+    "Step", "Section", "Chapter", "Figure", "Table", "Page", "Note", "Notes",
+    "First", "Second", "Third", "Next", "Last", "Final", "One", "Two", "Three",
+    "Working", "Building", "Getting", "Including", "According", "Based",
+}
+
+_SENTENCE_START = re.compile(r"(?:^|[.!?]\s+|\n\n)([A-Z][a-zA-Z]+)\b")
+
+
+LEADING_ARTICLES = {
+    "The", "A", "An", "This", "That", "These", "Those", "By", "In", "On",
+    "Of", "Our", "Their", "His", "Her", "Its",
 }
 
 
 def _heuristic_entities(text: str) -> list[dict]:
-    candidates = re.findall(r"\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3}\b", text)
-    counts: dict[str, int] = {}
+    """Heuristic fallback: prefer multi-word proper-noun phrases; strip
+    leading articles ("The Generator" → "Generator") and merge counts;
+    drop sentence-start singletons that look like noise ("In", "Round").
+    """
+    sentence_start_singles = set()
+    for m in _SENTENCE_START.finditer(text):
+        word = m.group(1)
+        if " " not in word:
+            sentence_start_singles.add(word)
+
+    candidates = re.findall(r"\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,4}\b", text)
+    multi: dict[str, int] = {}
+    single: dict[str, int] = {}
     for c in candidates:
-        if c.split()[0] in STOPWORDS:
+        parts = c.split()
+        while parts and parts[0] in LEADING_ARTICLES:
+            parts = parts[1:]
+        if not parts:
             continue
-        counts[c] = counts.get(c, 0) + 1
-    top = sorted(counts.items(), key=lambda x: -x[1])[:6]
-    return [{"name": name, "kind": "concept", "confidence": "INFERRED"} for name, _ in top]
+        first = parts[0]
+        if first in STOPWORDS:
+            continue
+        name = " ".join(parts)
+        if " " in name:
+            multi[name] = multi.get(name, 0) + 1
+        else:
+            single[name] = single.get(name, 0) + 1
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for name, _ in sorted(multi.items(), key=lambda x: -x[1]):
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"name": name, "kind": "concept", "confidence": "INFERRED"})
+        if len(out) >= 12:
+            break
+
+    for name, count in sorted(single.items(), key=lambda x: -x[1]):
+        key = name.lower()
+        if key in seen:
+            continue
+        if count < 2:
+            continue
+        if name in sentence_start_singles and count < 3:
+            continue
+        seen.add(key)
+        out.append({"name": name, "kind": "concept", "confidence": "INFERRED"})
+        if len(out) >= 18:
+            break
+
+    return out[:18]
+
+
+def _maybe_subchunk(text: str, max_chars: int = 2500) -> list[str]:
+    """Split a long chunk for extraction so we don't cap entities at 8 per huge text."""
+    if len(text) <= max_chars:
+        return [text]
+    paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+    pieces: list[str] = []
+    buf = ""
+    for p in paragraphs:
+        cand = (buf + "\n\n" + p).strip() if buf else p
+        if len(cand) <= max_chars:
+            buf = cand
+        else:
+            if buf:
+                pieces.append(buf)
+            if len(p) > max_chars:
+                for i in range(0, len(p), max_chars):
+                    pieces.append(p[i:i + max_chars])
+                buf = ""
+            else:
+                buf = p
+    if buf:
+        pieces.append(buf)
+    return pieces or [text]
+
+
+def _normalize_extraction(result) -> dict:
+    """Accept either the old list-of-entities or the new {entities, relations} shape."""
+    if isinstance(result, dict):
+        return {
+            "entities": result.get("entities") or [],
+            "relations": result.get("relations") or [],
+        }
+    if isinstance(result, list):
+        return {"entities": result, "relations": []}
+    return {"entities": [], "relations": []}
+
+
+def _ensure_entity(overall: dict, existing: dict, name: str, kind: str,
+                   confidence: str, summary: dict) -> str | None:
+    name = (name or "").strip()
+    slug = _slugify(name)
+    if not slug:
+        return None
+    ent_id = f"entity_{slug}"
+    if ent_id in existing:
+        existing[ent_id]["mentions"] = existing[ent_id].get("mentions", 0) + 1
+        existing[ent_id]["updated_at"] = _now()
+        summary["entities_reinforced"] += 1
+    else:
+        node = {
+            "id": ent_id,
+            "type": "entity",
+            "name": name,
+            "kind": kind or "concept",
+            "mentions": 1,
+            "created_at": _now(),
+        }
+        overall["nodes"].append(node)
+        existing[ent_id] = node
+        summary["entities_added"] += 1
+    return ent_id
 
 
 def integrate(extract_fn=None) -> dict:
@@ -137,6 +258,7 @@ def integrate(extract_fn=None) -> dict:
         "entities_added": 0,
         "entities_reinforced": 0,
         "edges_added": 0,
+        "relation_edges_added": 0,
         "errors": [],
     }
     with _lock:
@@ -153,54 +275,82 @@ def integrate(extract_fn=None) -> dict:
             overall["nodes"].append(new_chunk)
             summary["chunks_integrated"] += 1
 
-            entities: list = []
-            if extract_fn:
-                try:
-                    entities = extract_fn(chunk["text"]) or []
-                except Exception as e:
-                    summary["errors"].append(str(e))
-                    entities = []
-            if not entities:
-                entities = _heuristic_entities(chunk["text"])
+            pieces = _maybe_subchunk(chunk["text"])
+            all_entities: list[dict] = []
+            all_relations: list[dict] = []
+            for piece in pieces:
+                extracted = None
+                if extract_fn:
+                    try:
+                        extracted = _normalize_extraction(extract_fn(piece))
+                    except Exception as e:
+                        summary["errors"].append(str(e))
+                        extracted = None
+                if not extracted or (not extracted["entities"] and not extracted["relations"]):
+                    extracted = {"entities": _heuristic_entities(piece), "relations": []}
+                all_entities.extend(extracted["entities"])
+                all_relations.extend(extracted["relations"])
 
-            for ent in entities:
+            name_to_id: dict[str, str] = {}
+            for ent in all_entities:
                 if isinstance(ent, str):
-                    ent = {"name": ent, "kind": "concept", "confidence": "EXTRACTED"}
+                    ent = {"name": ent}
                 name = (ent.get("name") or "").strip()
-                if not name:
+                if not name or name.lower() in name_to_id:
+                    if name:
+                        existing_entities[name_to_id[name.lower()]]["mentions"] = (
+                            existing_entities[name_to_id[name.lower()]].get("mentions", 1) + 1
+                        )
                     continue
-                slug = _slugify(name)
-                if not slug:
+                ent_id = _ensure_entity(
+                    overall, existing_entities, name,
+                    ent.get("kind") or "concept",
+                    ent.get("confidence") or "EXTRACTED",
+                    summary,
+                )
+                if not ent_id:
                     continue
-                ent_id = f"entity_{slug}"
-                kind = ent.get("kind") or "concept"
-                confidence = ent.get("confidence") or "EXTRACTED"
-
-                if ent_id in existing_entities:
-                    existing_entities[ent_id]["mentions"] = existing_entities[ent_id].get("mentions", 0) + 1
-                    existing_entities[ent_id]["updated_at"] = _now()
-                    summary["entities_reinforced"] += 1
-                else:
-                    node = {
-                        "id": ent_id,
-                        "type": "entity",
-                        "name": name,
-                        "kind": kind,
-                        "mentions": 1,
-                        "created_at": _now(),
-                    }
-                    overall["nodes"].append(node)
-                    existing_entities[ent_id] = node
-                    summary["entities_added"] += 1
-
+                name_to_id[name.lower()] = ent_id
                 overall["edges"].append({
                     "id": f"e_{uuid.uuid4().hex[:10]}",
                     "from": new_chunk["id"],
                     "to": ent_id,
                     "label": "mentions",
-                    "confidence": confidence,
+                    "kind": "mentions",
+                    "confidence": ent.get("confidence") or "EXTRACTED",
                     "created_at": _now(),
                 })
+                summary["edges_added"] += 1
+
+            for rel in all_relations:
+                if not isinstance(rel, dict):
+                    continue
+                src_name = (rel.get("source") or "").strip()
+                tgt_name = (rel.get("target") or "").strip()
+                pred = (rel.get("predicate") or "related to").strip()
+                if not src_name or not tgt_name:
+                    continue
+                src_id = name_to_id.get(src_name.lower()) or _ensure_entity(
+                    overall, existing_entities, src_name, "concept", "INFERRED", summary
+                )
+                tgt_id = name_to_id.get(tgt_name.lower()) or _ensure_entity(
+                    overall, existing_entities, tgt_name, "concept", "INFERRED", summary
+                )
+                if not src_id or not tgt_id or src_id == tgt_id:
+                    continue
+                name_to_id[src_name.lower()] = src_id
+                name_to_id[tgt_name.lower()] = tgt_id
+                overall["edges"].append({
+                    "id": f"e_{uuid.uuid4().hex[:10]}",
+                    "from": src_id,
+                    "to": tgt_id,
+                    "label": pred,
+                    "kind": "relation",
+                    "confidence": rel.get("confidence") or "EXTRACTED",
+                    "chunk_id": new_chunk["id"],
+                    "created_at": _now(),
+                })
+                summary["relation_edges_added"] += 1
                 summary["edges_added"] += 1
 
         _save(OVERALL_PATH, overall)
