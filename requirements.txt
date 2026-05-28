@@ -5,3 +5,4 @@ anthropic>=0.40.0
 openai>=1.50.0
 ddgs>=6.0.0
 lxml>=5.0.0
+pypdf>=4.0.0

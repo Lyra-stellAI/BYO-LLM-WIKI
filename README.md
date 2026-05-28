@@ -62,6 +62,15 @@ Then open <http://localhost:5000>.
   button. A modal lets you add tags, a note, and source metadata.
 
 ### Knowledge Graph tab
+- **Ingest a corpus** — at the top of the tab, three modes:
+  - **Files**: drag-drop or pick `.txt`, `.md`, `.html`, `.pdf` (up to 50 MB).
+  - **URLs**: one URL per line — each page is fetched and chunked.
+  - **Text**: paste a large document with an optional source title.
+- All modes share **chunk size** (default 800 chars, ~200 tokens) and
+  **overlap** (default 120 chars, ~15%). The chunker splits on paragraph
+  boundaries first, then sentence boundaries inside long paragraphs, and
+  carries an overlap (snapped to a word boundary) between chunks. Chunks
+  land in staging tagged with their source and `part:i/N`.
 - Browse what's in **staging** (recently saved chunks awaiting integration).
 - Browse the **integrated** graph (chunks + extracted entities + edges).
 - Click **Integrate →** to move all staged chunks into the overall graph.
@@ -93,6 +102,12 @@ diff, back up, or edit by hand.
   staged chunks into the overall graph, extracting entities and edges.
 - `POST /api/kg/query` — `{ "query", "where?" }` returns matching nodes.
 - `DELETE /api/kg/node/<id>?where=current|overall` — remove a node.
+- `POST /api/kg/ingest/text` — chunk a pasted document into staging.
+  Body: `{ "text", "source_title?", "source_url?", "tags?", "chunk_size?", "overlap?" }`.
+- `POST /api/kg/ingest/urls` — fetch each URL, parse, chunk into staging.
+  Body: `{ "urls": [...], "tags?", "chunk_size?", "overlap?" }`.
+- `POST /api/kg/ingest/files` — multipart upload of `.txt`/`.md`/`.html`/`.pdf`,
+  with form fields `tags`, `chunk_size`, `overlap`.
 
 ## Configuration
 

@@ -63,6 +63,55 @@
     </section>
 
     <section id="tab-kg" class="tab-panel">
+      <div class="ingest-panel">
+        <div class="ingest-header">
+          <h3>Ingest a corpus</h3>
+          <div class="ingest-mode-tabs">
+            <button class="ingest-mode-tab active" data-mode="files">Files</button>
+            <button class="ingest-mode-tab" data-mode="urls">URLs</button>
+            <button class="ingest-mode-tab" data-mode="text">Text</button>
+          </div>
+        </div>
+
+        <div id="ingestFiles" class="ingest-mode active">
+          <label for="fileInput" id="dropZone" class="drop-zone">
+            <strong>Drop files here or click to select</strong>
+            <span>.txt · .md · .html · .pdf — up to 50 MB total</span>
+            <input type="file" id="fileInput" multiple accept=".txt,.md,.html,.htm,.pdf,.markdown,text/plain" hidden />
+          </label>
+          <div id="fileList" class="file-list"></div>
+        </div>
+
+        <div id="ingestUrls" class="ingest-mode">
+          <textarea id="urlInput" rows="4" placeholder="One URL per line&#10;https://example.com/article-1&#10;https://example.com/article-2"></textarea>
+        </div>
+
+        <div id="ingestText" class="ingest-mode">
+          <input id="textTitle" type="text" placeholder="Source title (e.g. Book — chapter 3)" />
+          <textarea id="textInput" rows="6" placeholder="Paste a large document, article, or book chapter…"></textarea>
+        </div>
+
+        <div class="ingest-options">
+          <label class="field">
+            <span class="field-label">Chunk size</span>
+            <input type="number" id="chunkSize" value="800" min="200" max="4000" step="100" />
+          </label>
+          <label class="field">
+            <span class="field-label">Overlap</span>
+            <input type="number" id="overlap" value="120" min="0" max="500" step="20" />
+          </label>
+          <label class="field field-grow">
+            <span class="field-label">Tags (comma-separated)</span>
+            <input type="text" id="ingestTags" placeholder="e.g. research, AI" />
+          </label>
+        </div>
+
+        <div class="ingest-actions">
+          <button id="ingestBtn" class="btn btn-accent">Ingest →</button>
+          <div id="ingestProgress" class="ingest-progress"></div>
+        </div>
+      </div>
+
       <div class="kg-toolbar">
         <input id="kgQuery" type="text" placeholder="Search the knowledge graph…" />
         <button id="kgSearchBtn" class="btn btn-secondary">Search</button>

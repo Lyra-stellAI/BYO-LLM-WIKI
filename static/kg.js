@@ -292,6 +292,157 @@
     }
   });
 
+  const modeTabs = document.querySelectorAll(".ingest-mode-tab");
+  const modePanels = {
+    files: document.getElementById("ingestFiles"),
+    urls: document.getElementById("ingestUrls"),
+    text: document.getElementById("ingestText"),
+  };
+  let activeMode = "files";
+  modeTabs.forEach((t) => {
+    t.addEventListener("click", () => {
+      activeMode = t.dataset.mode;
+      modeTabs.forEach((x) => x.classList.toggle("active", x === t));
+      Object.entries(modePanels).forEach(([m, el]) => el.classList.toggle("active", m === activeMode));
+    });
+  });
+
+  const dropZone = document.getElementById("dropZone");
+  const fileInput = document.getElementById("fileInput");
+  const fileListEl = document.getElementById("fileList");
+  let pendingFiles = [];
+
+  function renderFileList() {
+    fileListEl.innerHTML = pendingFiles.map((f, i) => `
+      <div class="file-row">
+        <span><span class="file-name">${esc(f.name)}</span><span class="file-meta">${(f.size / 1024).toFixed(1)} KB</span></span>
+        <button data-i="${i}" title="Remove">✕</button>
+      </div>
+    `).join("");
+    fileListEl.querySelectorAll("button").forEach((b) =>
+      b.addEventListener("click", () => {
+        pendingFiles.splice(Number(b.dataset.i), 1);
+        renderFileList();
+      })
+    );
+  }
+
+  function addFiles(list) {
+    for (const f of list) pendingFiles.push(f);
+    renderFileList();
+  }
+
+  fileInput.addEventListener("change", (e) => addFiles(e.target.files));
+  ["dragenter", "dragover"].forEach((ev) =>
+    dropZone.addEventListener(ev, (e) => {
+      e.preventDefault();
+      dropZone.classList.add("dragover");
+    })
+  );
+  ["dragleave", "drop"].forEach((ev) =>
+    dropZone.addEventListener(ev, (e) => {
+      e.preventDefault();
+      dropZone.classList.remove("dragover");
+    })
+  );
+  dropZone.addEventListener("drop", (e) => {
+    if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
+  });
+
+  const ingestBtn = document.getElementById("ingestBtn");
+  const ingestProgress = document.getElementById("ingestProgress");
+
+  function setIngestStatus(msg, kind = "info") {
+    ingestProgress.className = "ingest-progress" + (kind === "error" ? " error" : kind === "ok" ? " ok" : "");
+    ingestProgress.textContent = msg;
+  }
+
+  function getOptions() {
+    return {
+      chunk_size: parseInt(document.getElementById("chunkSize").value, 10) || 800,
+      overlap: parseInt(document.getElementById("overlap").value, 10) || 120,
+      tags: document.getElementById("ingestTags").value.split(",").map((t) => t.trim()).filter(Boolean),
+    };
+  }
+
+  async function ingestText() {
+    const text = document.getElementById("textInput").value.trim();
+    if (text.length < 50) throw new Error("Paste at least 50 characters.");
+    const opts = getOptions();
+    const body = {
+      ...opts,
+      text,
+      source_title: document.getElementById("textTitle").value.trim() || "Pasted document",
+    };
+    const res = await fetch("/api/kg/ingest/text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Ingest failed");
+    document.getElementById("textInput").value = "";
+    document.getElementById("textTitle").value = "";
+    return `Created ${data.chunks_created} chunk(s) from "${data.source}".`;
+  }
+
+  async function ingestUrls() {
+    const urls = document.getElementById("urlInput").value
+      .split("\n").map((u) => u.trim()).filter(Boolean);
+    if (!urls.length) throw new Error("Paste one or more URLs.");
+    const opts = getOptions();
+    const res = await fetch("/api/kg/ingest/urls", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...opts, urls }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Ingest failed");
+    document.getElementById("urlInput").value = "";
+    const errs = data.results.filter((r) => r.error);
+    const okCount = data.results.length - errs.length;
+    let msg = `Fetched ${okCount}/${data.results.length} URLs, created ${data.total_chunks} chunks.`;
+    if (errs.length) msg += " Errors: " + errs.map((e) => `${e.url} (${e.error})`).join("; ");
+    return msg;
+  }
+
+  async function ingestFiles() {
+    if (!pendingFiles.length) throw new Error("Add at least one file.");
+    const opts = getOptions();
+    const fd = new FormData();
+    pendingFiles.forEach((f) => fd.append("files", f));
+    fd.append("tags", opts.tags.join(","));
+    fd.append("chunk_size", String(opts.chunk_size));
+    fd.append("overlap", String(opts.overlap));
+    const res = await fetch("/api/kg/ingest/files", { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Ingest failed");
+    pendingFiles = [];
+    renderFileList();
+    const errs = data.results.filter((r) => r.error);
+    let msg = `Parsed ${data.results.length - errs.length}/${data.results.length} files, created ${data.total_chunks} chunks.`;
+    if (errs.length) msg += " Errors: " + errs.map((e) => `${e.filename} (${e.error})`).join("; ");
+    return msg;
+  }
+
+  ingestBtn.addEventListener("click", async () => {
+    ingestBtn.disabled = true;
+    const prev = ingestBtn.textContent;
+    ingestBtn.textContent = "Ingesting…";
+    setIngestStatus("Working…");
+    try {
+      const fn = activeMode === "files" ? ingestFiles : activeMode === "urls" ? ingestUrls : ingestText;
+      const msg = await fn();
+      setIngestStatus(msg, "ok");
+      await refresh();
+    } catch (e) {
+      setIngestStatus(e.message, "error");
+    } finally {
+      ingestBtn.disabled = false;
+      ingestBtn.textContent = prev;
+    }
+  });
+
   window.kg = { openModal, refresh };
   refresh();
 })();

@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 from flask import Flask, jsonify, render_template, request
 
 import knowledge_graph as kg
+import ingestion
 
 try:
     from anthropic import Anthropic
@@ -25,6 +26,7 @@ except ImportError:
     DDGS = None
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -409,6 +411,135 @@ def api_kg_query():
     where = data.get("where", "overall")
     nodes = kg.query(q, where=where)
     return jsonify({"results": nodes, "query": q, "where": where})
+
+
+def _ingest_chunks(text, *, source_title, source_url, tags, chunk_size, overlap):
+    chunks = ingestion.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+    total = len(chunks)
+    if total == 0:
+        return 0
+    for i, c in enumerate(chunks, start=1):
+        title = source_title if total == 1 else f"{source_title} [{i}/{total}]"
+        chunk_tags = list(tags) + ([f"part:{i}/{total}"] if total > 1 else [])
+        kg.add_chunk(c, source_url=source_url, source_title=title, tags=chunk_tags)
+    return total
+
+
+def _parse_options(data):
+    try:
+        chunk_size = int(data.get("chunk_size") or 800)
+    except (TypeError, ValueError):
+        chunk_size = 800
+    try:
+        overlap = int(data.get("overlap") or 120)
+    except (TypeError, ValueError):
+        overlap = 120
+    chunk_size = max(200, min(chunk_size, 4000))
+    overlap = max(0, min(overlap, chunk_size // 2))
+    tags_in = data.get("tags") or []
+    if isinstance(tags_in, str):
+        tags = [t.strip() for t in tags_in.split(",") if t.strip()]
+    elif isinstance(tags_in, list):
+        tags = [str(t).strip() for t in tags_in if str(t).strip()]
+    else:
+        tags = []
+    return chunk_size, overlap, tags
+
+
+@app.route("/api/kg/ingest/text", methods=["POST"])
+def api_kg_ingest_text():
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    if len(text) < 50:
+        return jsonify({"error": "Provide at least 50 characters of text."}), 400
+    chunk_size, overlap, tags = _parse_options(data)
+    source_title = (data.get("source_title") or "Pasted document").strip()
+    source_url = (data.get("source_url") or "").strip()
+    total = _ingest_chunks(
+        text, source_title=source_title, source_url=source_url,
+        tags=tags, chunk_size=chunk_size, overlap=overlap,
+    )
+    return jsonify({
+        "ok": True,
+        "source": source_title,
+        "chunks_created": total,
+        "chunk_size": chunk_size,
+        "overlap": overlap,
+        "stats": kg.stats(),
+    })
+
+
+@app.route("/api/kg/ingest/urls", methods=["POST"])
+def api_kg_ingest_urls():
+    data = request.get_json(silent=True) or {}
+    raw_urls = data.get("urls") or []
+    if isinstance(raw_urls, str):
+        raw_urls = [u.strip() for u in raw_urls.splitlines() if u.strip()]
+    urls = [u.strip() for u in raw_urls if u and u.strip()]
+    if not urls:
+        return jsonify({"error": "Provide at least one URL."}), 400
+    chunk_size, overlap, tags = _parse_options(data)
+
+    results = []
+    total_chunks = 0
+    for url in urls:
+        if not is_valid_url(url):
+            results.append({"url": url, "error": "Invalid URL", "chunks": 0})
+            continue
+        try:
+            page = fetch_page(url)
+            n = _ingest_chunks(
+                page["text"], source_title=page["title"], source_url=url,
+                tags=tags, chunk_size=chunk_size, overlap=overlap,
+            )
+            results.append({"url": url, "title": page["title"], "chunks": n})
+            total_chunks += n
+        except Exception as e:
+            results.append({"url": url, "error": str(e), "chunks": 0})
+    return jsonify({
+        "ok": True,
+        "total_chunks": total_chunks,
+        "results": results,
+        "chunk_size": chunk_size,
+        "overlap": overlap,
+        "stats": kg.stats(),
+    })
+
+
+@app.route("/api/kg/ingest/files", methods=["POST"])
+def api_kg_ingest_files():
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"error": "No files uploaded."}), 400
+    chunk_size, overlap, tags = _parse_options({
+        "chunk_size": request.form.get("chunk_size"),
+        "overlap": request.form.get("overlap"),
+        "tags": request.form.get("tags") or "",
+    })
+
+    results = []
+    total_chunks = 0
+    for f in files:
+        name = f.filename or "untitled"
+        try:
+            content = f.read()
+            text = ingestion.parse_file(name, content)
+            n = _ingest_chunks(
+                text, source_title=name, source_url="",
+                tags=tags, chunk_size=chunk_size, overlap=overlap,
+            )
+            results.append({"filename": name, "chunks": n, "chars": len(text)})
+            total_chunks += n
+        except Exception as e:
+            results.append({"filename": name, "error": str(e), "chunks": 0})
+    return jsonify({
+        "ok": True,
+        "total_chunks": total_chunks,
+        "results": results,
+        "chunk_size": chunk_size,
+        "overlap": overlap,
+        "stats": kg.stats(),
+    })
 
 
 if __name__ == "__main__":
