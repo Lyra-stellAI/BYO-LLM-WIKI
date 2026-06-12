@@ -33,7 +33,7 @@ def _load(path: Path) -> dict:
     if not path.exists():
         return _empty_graph()
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return _empty_graph()
 
@@ -41,7 +41,7 @@ def _load(path: Path) -> dict:
 def _save(path: Path, data: dict) -> None:
     data["updated_at"] = _now()
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(path)
 
 
