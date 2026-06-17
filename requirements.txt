@@ -6,3 +6,9 @@ openai>=1.50.0
 ddgs>=6.0.0
 lxml>=5.0.0
 pypdf>=4.0.0
+
+# Agent layer (deepagents harness, local filesystem backend). Optional but
+# required for /api/agent/* (Ask, Maintain) and the runner.py CLI.
+deepagents>=0.6.0
+langchain-anthropic>=1.0.0
+langchain-openai>=0.3.0

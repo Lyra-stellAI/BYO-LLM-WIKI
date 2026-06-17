@@ -1,4 +1,3 @@
-import json
 import os
 import re
 from urllib.parse import urlparse
@@ -9,6 +8,14 @@ from flask import Flask, jsonify, render_template, request
 
 import knowledge_graph as kg
 import ingestion
+import extraction
+from providers import (
+    PROVIDERS,
+    agent_dependencies_available,
+    first_available_provider,
+    provider_configured,
+    resolve_provider_model,
+)
 
 try:
     from anthropic import Anthropic
@@ -34,43 +41,6 @@ USER_AGENT = (
 )
 REQUEST_TIMEOUT = 15
 MAX_CHARS_FOR_MODEL = 16000
-
-PROVIDERS = {
-    "anthropic": {
-        "label": "Anthropic (Claude)",
-        "env_key": "ANTHROPIC_API_KEY",
-        "default_model": "claude-haiku-4-5-20251001",
-        "models": [
-            "claude-haiku-4-5-20251001",
-            "claude-sonnet-4-6",
-            "claude-opus-4-7",
-        ],
-    },
-    "openai": {
-        "label": "OpenAI",
-        "env_key": "OPENAI_API_KEY",
-        "base_url_env": "OPENAI_BASE_URL",
-        "base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-4o-mini",
-        "models": ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"],
-    },
-    "qwen": {
-        "label": "Qwen (DashScope)",
-        "env_key": "DASHSCOPE_API_KEY",
-        "base_url_env": "QWEN_BASE_URL",
-        "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-        "default_model": "qwen-plus",
-        "models": ["qwen-plus", "qwen-turbo", "qwen-max", "qwen2.5-72b-instruct"],
-    },
-    "deepseek": {
-        "label": "DeepSeek",
-        "env_key": "DEEPSEEK_API_KEY",
-        "base_url_env": "DEEPSEEK_BASE_URL",
-        "base_url": "https://api.deepseek.com",
-        "default_model": "deepseek-chat",
-        "models": ["deepseek-chat", "deepseek-reasoner"],
-    },
-}
 
 
 def is_valid_url(text: str) -> bool:
@@ -158,7 +128,7 @@ def openai_compatible_summary(provider: str, model: str, title: str, url: str, t
     api_key = os.environ.get(config["env_key"])
     if not api_key:
         raise RuntimeError(f"{config['env_key']} is not set.")
-    base_url = os.environ.get(config["base_url_env"], config["base_url"])
+    base_url = os.environ.get(config.get("base_url_env", ""), config.get("base_url"))
     client = OpenAI(api_key=api_key, base_url=base_url)
     resp = client.chat.completions.create(
         model=model,
@@ -174,13 +144,6 @@ def generate_ai_summary(provider: str, model: str, title: str, url: str, text: s
     if provider in ("openai", "qwen", "deepseek"):
         return openai_compatible_summary(provider, model, title, url, text)
     raise ValueError(f"Unknown provider: {provider}")
-
-
-def first_available_provider() -> str | None:
-    for name, cfg in PROVIDERS.items():
-        if os.environ.get(cfg["env_key"]):
-            return name
-    return None
 
 
 def web_search(query: str, max_results: int = 8) -> list[dict]:
@@ -210,10 +173,14 @@ def api_providers():
             "label": cfg["label"],
             "default_model": cfg["default_model"],
             "models": cfg["models"],
-            "configured": bool(os.environ.get(cfg["env_key"])),
+            "configured": provider_configured(name),
             "env_key": cfg["env_key"],
         }
-    return jsonify({"providers": payload, "auto": first_available_provider()})
+    return jsonify({
+        "providers": payload,
+        "auto": first_available_provider(),
+        "agent_available": agent_dependencies_available(),
+    })
 
 
 @app.route("/api/search", methods=["POST"])
@@ -287,105 +254,6 @@ def api_summarize():
         return jsonify({"error": f"Summarization failed: {e}"}), 500
 
 
-ENTITY_PROMPT = """You are extracting a knowledge graph from a passage of text.
-
-Identify the 8-15 MOST IMPORTANT entities — the named people, organizations,
-places, products, technologies, methods, frameworks, or concepts that this
-passage is actually ABOUT. Skip generic terms and sentence-starting words
-like "In", "When", "Round". Prefer multi-word canonical names.
-
-Then identify the SEMANTIC RELATIONSHIPS between those entities — who did
-what to whom, what depends on what, what is a part of what. These triples
-are what makes a knowledge graph useful.
-
-Return ONLY a JSON object with this exact shape:
-
-{{
-  "entities": [
-    {{
-      "name": "short canonical form (1-5 words, Title Case)",
-      "kind": "person | organization | place | concept | technology | method | event | product",
-      "importance": 1-5,
-      "confidence": "EXTRACTED | INFERRED | AMBIGUOUS"
-    }}
-  ],
-  "relations": [
-    {{
-      "source": "<entity name as above>",
-      "target": "<entity name as above>",
-      "predicate": "short active-voice verb phrase (1-4 words)",
-      "confidence": "EXTRACTED | INFERRED | AMBIGUOUS"
-    }}
-  ]
-}}
-
-Rules:
-- Entity names in `relations` MUST exactly match names in `entities`.
-- At least half the entities should appear in at least one relation.
-- Predicates should be specific and meaningful (e.g. "expands prompt into",
-  "evaluates output of", "replaces", "depends on"), not generic ("mentions",
-  "related to", "is").
-
-Text:
-\"\"\"
-{text}
-\"\"\"
-
-Return only the JSON object, no prose:"""
-
-
-def _parse_json_object(text: str) -> dict:
-    text = text.strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
-        return {}
-    try:
-        out = json.loads(m.group())
-        return out if isinstance(out, dict) else {}
-    except Exception:
-        return {}
-
-
-def extract_kg_llm(text: str, provider: str, model: str) -> dict:
-    """Returns {'entities': [...], 'relations': [...]}."""
-    prompt = ENTITY_PROMPT.format(text=text[:8000])
-    if provider == "anthropic":
-        if Anthropic is None or not os.environ.get("ANTHROPIC_API_KEY"):
-            return {}
-        client = Anthropic()
-        msg = client.messages.create(
-            model=model,
-            max_tokens=1500,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        out = "".join(b.text for b in msg.content if hasattr(b, "text"))
-    elif provider in PROVIDERS and OpenAI is not None:
-        config = PROVIDERS[provider]
-        api_key = os.environ.get(config["env_key"])
-        if not api_key:
-            return {}
-        client = OpenAI(
-            api_key=api_key,
-            base_url=os.environ.get(config["base_url_env"], config["base_url"]),
-        )
-        resp = client.chat.completions.create(
-            model=model,
-            max_tokens=1500,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        out = resp.choices[0].message.content or ""
-    else:
-        return {}
-    parsed = _parse_json_object(out)
-    if not isinstance(parsed.get("entities"), list):
-        parsed["entities"] = []
-    if not isinstance(parsed.get("relations"), list):
-        parsed["relations"] = []
-    return parsed
-
-
 @app.route("/api/kg/stats")
 def api_kg_stats():
     return jsonify(kg.stats())
@@ -417,6 +285,7 @@ def api_kg_add():
 def api_kg_integrate():
     data = request.get_json(silent=True) or {}
     use_ai = bool(data.get("use_ai", True))
+    use_agent = bool(data.get("use_agent", False))
     provider = (data.get("provider") or "auto").strip().lower()
     model = (data.get("model") or "").strip()
 
@@ -424,15 +293,25 @@ def api_kg_integrate():
     used_provider = "heuristic"
     used_model = ""
     if use_ai:
-        actual = provider if provider in PROVIDERS else first_available_provider()
+        actual, actual_model = resolve_provider_model(provider, model)
         if actual:
-            actual_model = model or PROVIDERS[actual]["default_model"]
             used_provider, used_model = actual, actual_model
-            extract_fn = lambda t: extract_kg_llm(t, actual, actual_model)
+            extract_fn = lambda t: extraction.extract_kg_llm(t, actual, actual_model)  # noqa: E731
 
     result = kg.integrate(extract_fn=extract_fn)
     result["provider_used"] = used_provider
     result["model_used"] = used_model
+
+    # Optional agentic organize pass: dedupe, build topics, summarize, synthesize.
+    if use_agent:
+        try:
+            import agent
+            organize = agent.run_ingest(provider=provider, model=model)
+            result["agent_report"] = organize.get("report")
+            result["agent_used"] = f"{organize.get('provider')}/{organize.get('model')}"
+        except Exception as e:  # noqa: BLE001
+            result["agent_error"] = str(e)
+
     result["stats"] = kg.stats()
     return jsonify(result)
 
@@ -451,6 +330,69 @@ def api_kg_query():
     where = data.get("where", "overall")
     nodes = kg.query(q, where=where)
     return jsonify({"results": nodes, "query": q, "where": where})
+
+
+# --- Agent layer endpoints ---------------------------------------------------
+def _agent_or_error():
+    """Import the agent module, returning (module, None) or (None, error_json)."""
+    if not agent_dependencies_available():
+        return None, (jsonify({
+            "error": "The agent layer requires deepagents. Install with "
+                     "`pip install deepagents langchain-anthropic langchain-openai`."
+        }), 503)
+    try:
+        import agent
+        return agent, None
+    except Exception as e:  # noqa: BLE001
+        return None, (jsonify({"error": f"Agent unavailable: {e}"}), 503)
+
+
+@app.route("/api/agent/status")
+def api_agent_status():
+    return jsonify({
+        "agent_available": agent_dependencies_available(),
+        "provider_ready": first_available_provider(),
+        "configured": {name: provider_configured(name) for name in PROVIDERS},
+    })
+
+
+@app.route("/api/agent/ask", methods=["POST"])
+def api_agent_ask():
+    mod, err = _agent_or_error()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    question = (data.get("question") or "").strip()
+    if not question:
+        return jsonify({"error": "A question is required."}), 400
+    provider = (data.get("provider") or "auto").strip().lower()
+    model = (data.get("model") or "").strip()
+    file_answer = bool(data.get("file_answer", True))
+    try:
+        res = mod.run_query(question, provider=provider, model=model, file_answer=file_answer)
+        return jsonify(res)
+    except mod.AgentError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": f"Query failed: {e}"}), 500
+
+
+@app.route("/api/agent/maintain", methods=["POST"])
+def api_agent_maintain():
+    mod, err = _agent_or_error()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    provider = (data.get("provider") or "auto").strip().lower()
+    model = (data.get("model") or "").strip()
+    try:
+        res = mod.run_lint(provider=provider, model=model)
+        res["stats"] = kg.stats()
+        return jsonify(res)
+    except mod.AgentError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": f"Maintenance failed: {e}"}), 500
 
 
 def _ingest_chunks(text, *, source_title, source_url, tags, chunk_size, overlap):

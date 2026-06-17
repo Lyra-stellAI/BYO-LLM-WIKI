@@ -12,3 +12,4 @@ env/
 .vscode/
 data/*.json
 data/*.tmp
+data/library/

@@ -112,6 +112,19 @@
         </div>
       </div>
 
+      <div class="agent-panel">
+        <div class="agent-head">
+          <h3>Ask your library</h3>
+          <span id="agentStatus" class="provider-status"></span>
+        </div>
+        <div class="agent-ask-row">
+          <input id="askInput" type="text" placeholder="Ask a grounded question across everything you've saved…" autocomplete="off" />
+          <button id="askBtn" class="btn btn-accent">Ask</button>
+          <button id="maintainBtn" class="btn btn-secondary" title="Maintenance pass: de-duplicate entities, build the topic hierarchy, write syntheses">Maintain ✨</button>
+        </div>
+        <div id="askAnswer" class="ask-answer hidden"></div>
+      </div>
+
       <div class="kg-toolbar">
         <input id="kgQuery" type="text" placeholder="Search the knowledge graph…" />
         <button id="kgSearchBtn" class="btn btn-secondary">Search</button>
@@ -119,9 +132,12 @@
       </div>
 
       <div class="kg-summary">
+        <div class="kg-stat"><span id="overallSources">0</span> sources</div>
         <div class="kg-stat"><span id="currentChunks">0</span> staged</div>
-        <div class="kg-stat"><span id="overallChunks">0</span> integrated</div>
+        <div class="kg-stat"><span id="overallChunks">0</span> chunks</div>
         <div class="kg-stat"><span id="overallEntities">0</span> entities</div>
+        <div class="kg-stat"><span id="overallTopics">0</span> topics</div>
+        <div class="kg-stat"><span id="overallSyntheses">0</span> syntheses</div>
         <div class="kg-stat"><span id="overallEdges">0</span> edges</div>
       </div>
 
@@ -142,6 +158,7 @@
           </div>
         </aside>
         <div class="kg-main">
+          <div id="kgLegend" class="kg-legend"></div>
           <div id="kgGraph" class="kg-graph"></div>
           <div id="kgDetail" class="kg-detail empty">
             Click a node in the graph or a chunk in the sidebar to see details.
