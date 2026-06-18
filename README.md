@@ -155,6 +155,27 @@ python runner.py --mode lint        # whole-library maintenance pass
 Add `--provider anthropic|openai|qwen|deepseek` and `--model <id>` to choose the
 model, or `--no-agent` to skip the LLM organize step (heuristic only).
 
+### Tracing with LangSmith
+
+Every agent run (Ask / Maintain / the CLI modes) can be traced to
+[LangSmith](https://smith.langchain.com). Because the agent runs on
+LangChain/deepagents, tracing is automatic once these variables are set — no
+code changes needed:
+
+```bash
+export LANGSMITH_TRACING=true
+export LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+export LANGSMITH_API_KEY=lsv2_...
+export LANGSMITH_PROJECT="Trend_analysis"
+```
+
+Put them (and your model keys) in a local `.env` — copy `.env.example` to
+`.env` — and both `app.py` and `runner.py` load it on startup. Runs are given
+readable names (`ingest · <topic>`, `query · <question>`, `maintain · <topic>`)
+and tagged `knowledge-library`, so they group cleanly in the project. The
+agent-status line in the UI (and `GET /api/agent/status`) shows the active
+tracing project when enabled.
+
 ## Endpoints
 
 - `GET /api/providers` — list configured providers, suggested models, and

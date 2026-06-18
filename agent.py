@@ -363,10 +363,18 @@ def _collect_citations(result: dict, answer: str) -> list[dict]:
     return citations
 
 
-def _invoke(agent, prompt: str) -> dict:
+def _invoke(agent, prompt: str, *, run_name: str | None = None,
+            tags: list[str] | None = None, metadata: dict | None = None) -> dict:
+    config: dict = {"recursion_limit": _RECURSION_LIMIT}
+    if run_name:
+        config["run_name"] = run_name
+    # Always tag traces so they are easy to find/group in LangSmith.
+    config["tags"] = ["knowledge-library", *(tags or [])]
+    if metadata:
+        config["metadata"] = metadata
     return agent.invoke(
         {"messages": [{"role": "user", "content": prompt}]},
-        config={"recursion_limit": _RECURSION_LIMIT},
+        config=config,
     )
 
 
@@ -399,7 +407,12 @@ def run_ingest(*, provider=None, model=None, new_entities: list[str] | None = No
         new_entities = [e["name"] for e in kg.list_entities(limit=40)]
     listing = "\n".join(f"- {n}" for n in new_entities[:60]) or "- (none reported)"
     agent = _build_agent(chat, ws, read_only=False)
-    result = _invoke(agent, _INGEST_PROMPT.format(new_entities=listing))
+    result = _invoke(
+        agent, _INGEST_PROMPT.format(new_entities=listing),
+        run_name=f"ingest · {topic}",
+        tags=["ingest"],
+        metadata={"mode": "ingest", "entities": len(new_entities), "model": f"{rp}/{rm}"},
+    )
     report = _final_message(result) or "Ingest organize pass complete."
     refresh_index(ws, topic)
     append_log(ws, "ingest.organize", "applied",
@@ -418,7 +431,12 @@ def run_query(question: str, *, provider=None, model=None, file_answer: bool = T
     chat, rp, rm = _resolve_model(provider, model)
     # Read-only reasoning pass.
     agent = _build_agent(chat, ws, read_only=True)
-    result = _invoke(agent, _QUERY_PROMPT.format(question=question.strip()))
+    result = _invoke(
+        agent, _QUERY_PROMPT.format(question=question.strip()),
+        run_name=f"query · {question.strip()[:48]}",
+        tags=["query"],
+        metadata={"mode": "query", "question": question.strip()[:200], "model": f"{rp}/{rm}"},
+    )
     answer = _final_message(result) or "No answer was produced."
     citations = _collect_citations(result, answer)
 
@@ -450,7 +468,12 @@ def run_lint(*, provider=None, model=None, topic: str = "Knowledge",
     before = kg.stats()["overall"]
     chat, rp, rm = _resolve_model(provider, model)
     agent = _build_agent(chat, ws, read_only=False)
-    result = _invoke(agent, _LINT_PROMPT)
+    result = _invoke(
+        agent, _LINT_PROMPT,
+        run_name=f"maintain · {topic}",
+        tags=["lint", "maintain"],
+        metadata={"mode": "lint", "entities_before": before["entities"], "model": f"{rp}/{rm}"},
+    )
     report = _final_message(result) or "Maintenance pass complete."
     refresh_index(ws, topic)
     after = kg.stats()["overall"]

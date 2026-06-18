@@ -23,6 +23,9 @@ import argparse
 import sys
 from pathlib import Path
 
+import config
+config.load_env()  # pick up LangSmith + model keys from a local .env if present
+
 import agent
 import extraction
 import ingestion
@@ -116,6 +119,10 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = _build_parser().parse_args(argv)
     workspace = Path(args.workspace) if args.workspace else None
+
+    ts = config.tracing_status()
+    if ts["enabled"]:
+        print(f"[tracing] LangSmith → project '{ts['project']}' ({ts['endpoint']})", file=sys.stderr)
 
     if args.mode == "init":
         res = agent.run_init(topic=args.topic, workspace=workspace)

@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify, render_template, request
 
+import config
 import knowledge_graph as kg
 import ingestion
 import extraction
@@ -16,6 +17,9 @@ from providers import (
     provider_configured,
     resolve_provider_model,
 )
+
+# Load a local .env (LangSmith + model keys) if present, before reading env.
+config.load_env()
 
 try:
     from anthropic import Anthropic
@@ -353,6 +357,7 @@ def api_agent_status():
         "agent_available": agent_dependencies_available(),
         "provider_ready": first_available_provider(),
         "configured": {name: provider_configured(name) for name in PROVIDERS},
+        "tracing": config.tracing_status(),
     })
 
 

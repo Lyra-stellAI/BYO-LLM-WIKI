@@ -515,7 +515,8 @@
         agentStatusEl.className = "provider-status warn";
       } else {
         agentReady = true;
-        agentStatusEl.textContent = `Ready: ${s.provider_ready}`;
+        const trace = s.tracing && s.tracing.enabled ? ` · tracing → ${s.tracing.project}` : "";
+        agentStatusEl.textContent = `Ready: ${s.provider_ready}${trace}`;
         agentStatusEl.className = "provider-status ok";
       }
     } catch (e) {
