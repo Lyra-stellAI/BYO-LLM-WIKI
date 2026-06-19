@@ -227,10 +227,13 @@ def run_experiment(*, provider: str = "auto", model: str | None = None,
     ds = sync_dataset(client, provider=rp, model=rm)
     name = client.read_dataset(dataset_id=ds["id"]).name
 
-    # One synthesis-correctness evaluator per panel judge (separate columns in the UI).
-    panel_keys = [f"correctness_{jp}" for jp, _ in panel]
+    # One synthesis-correctness evaluator per panel judge (separate columns in the
+    # UI). Key by MODEL (not provider) so same-family judges don't collide.
+    def _ckey(m):
+        return "correctness_" + re.sub(r"[^a-z0-9]+", "-", m.lower()).strip("-")
+    panel_keys = [_ckey(jm) for _, jm in panel]
     evaluators = [_retrieval_recall, _retrieval_any]
-    evaluators += [_make_synthesis_judge(jp, jm, key=f"correctness_{jp}") for jp, jm in panel]
+    evaluators += [_make_synthesis_judge(jp, jm, key=_ckey(jm)) for jp, jm in panel]
     if ragas:
         try:
             import ragas_eval
