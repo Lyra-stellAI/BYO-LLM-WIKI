@@ -400,6 +400,87 @@ def api_agent_maintain():
         return jsonify({"error": f"Maintenance failed: {e}"}), 500
 
 
+# --- RAG / contextual vector library endpoints ------------------------------
+@app.route("/api/rag/stats")
+def api_rag_stats():
+    try:
+        from vectorstore import VectorStore
+        return jsonify(VectorStore.load("library").stats())
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rag/ingest", methods=["POST"])
+def api_rag_ingest():
+    data = request.get_json(silent=True) or {}
+    urls = data.get("urls") or []
+    if isinstance(urls, str):
+        urls = [u.strip() for u in urls.splitlines() if u.strip()]
+    urls = [u for u in urls if is_valid_url(u)]
+    if not urls:
+        return jsonify({"error": "Provide one or more valid URLs."}), 400
+    provider = (data.get("provider") or "auto").strip().lower()
+    model = (data.get("model") or "").strip()
+    try:
+        import pipeline
+        return jsonify(pipeline.ingest_urls(urls, provider=provider, model=model))
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rag/search", methods=["POST"])
+def api_rag_search():
+    """Hierarchical retrieval only (no LLM) — inspect what the retriever returns."""
+    data = request.get_json(silent=True) or {}
+    q = (data.get("query") or data.get("question") or "").strip()
+    if not q:
+        return jsonify({"error": "A query is required."}), 400
+    k = int(data.get("k") or 8)
+    graph_rag = bool(data.get("graph_rag", True))
+    try:
+        import rag
+        return jsonify({"query": q, "hits": rag.retrieve(q, k=k, graph_rag=graph_rag)})
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rag/ask", methods=["POST"])
+def api_rag_ask():
+    data = request.get_json(silent=True) or {}
+    question = (data.get("question") or "").strip()
+    if not question:
+        return jsonify({"error": "A question is required."}), 400
+    provider = (data.get("provider") or "auto").strip().lower()
+    model = (data.get("model") or "").strip()
+    k = int(data.get("k") or 6)
+    graph_rag = bool(data.get("graph_rag", True))
+    try:
+        import rag
+        return jsonify(rag.answer(question, provider=provider, model=model,
+                                  k=k, graph_rag=graph_rag))
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rag/eval", methods=["POST"])
+def api_rag_eval():
+    data = request.get_json(silent=True) or {}
+    provider = (data.get("provider") or "auto").strip().lower()
+    model = (data.get("model") or "").strip()
+    k = int(data.get("k") or 6)
+    max_q = int(data.get("max_questions") or 10)
+    graph_rag = bool(data.get("graph_rag", True))
+    try:
+        import rag
+        eval_set = data.get("eval_set") or rag.build_eval_set(
+            provider=provider, model=model, max_questions=max_q)
+        report = rag.evaluate(eval_set, provider=provider, model=model,
+                              k=k, graph_rag=graph_rag)
+        return jsonify(report)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
 def _ingest_chunks(text, *, source_title, source_url, tags, chunk_size, overlap):
     chunks = ingestion.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
     total = len(chunks)

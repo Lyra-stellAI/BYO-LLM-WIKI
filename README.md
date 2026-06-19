@@ -183,6 +183,48 @@ and tagged `knowledge-library`, so they group cleanly in the project. The
 agent-status line in the UI (and `GET /api/agent/status`) shows the active
 tracing project when enabled.
 
+## Contextual retrieval & vector library
+
+The **Library Q&A** tab (and `rag-*` CLI modes) build a vector database tuned for
+high-quality retrieval, then answer questions grounded in what you ingested.
+
+**Indexing** (`pipeline.py`): each page is fetched and cleaned; a single LLM call
+reads the whole document and writes a **contextual summary per section** (so each
+summary is situated in the full document — Anthropic-style *contextual
+retrieval*). Sections are split into chunks, and every chunk is embedded with its
+`title · date · section context` prepended. Each record carries a clear retrieval
+index: **date, source URL, title, and contextual summary**.
+
+**Storage** (`vectorstore.py`): a two-layer **HNSW** index (via `hnswlib`, with a
+numpy cosine fallback) — a coarse *section-summary* layer and a fine *chunk*
+layer — persisted under `data/vectors/`. Embeddings use OpenAI
+`text-embedding-3-small` (Anthropic has no embeddings API).
+
+**Retrieval** (`rag.py`) is **hierarchical**: rank section summaries first, then
+drill into chunks, scoring each chunk by a blend of its own similarity and its
+parent section's similarity. Optionally enriched with **graph RAG** — 1-hop
+knowledge-graph context (entities/topics) for each retrieved chunk. The same
+hierarchy is mirrored into the knowledge graph as `source → section → chunk`.
+
+**Evaluation** (`rag.py`): generates a grounded `(question, expected source)` set
+from the ingested docs, then scores **retrieval hit-rate@k**, **MRR**, and an
+**LLM-judge answer score**. Retrieval, answering, and evaluation are wrapped with
+LangSmith `@traceable`, so runs appear in your tracing project.
+
+```bash
+# Ingest pages into the contextual vector library
+python runner.py --mode rag-ingest \
+  --url https://www.langchain.com/blog/the-art-of-loop-engineering \
+  --url https://www.langchain.com/resources/llm-evals
+# (or: --source urls.txt  with one URL per line)
+
+# Ask a grounded, cited question
+python runner.py --mode rag-ask --question "How do rubrics help agents self-correct?"
+
+# Generate a test set from the corpus and run the evaluation
+python runner.py --mode rag-eval
+```
+
 ## Endpoints
 
 - `GET /api/providers` — list configured providers, suggested models, and
@@ -206,6 +248,15 @@ tracing project when enabled.
   → grounded answer + citations (agent query mode).
 - `POST /api/agent/maintain` — `{ "provider?", "model?" }` runs the maintenance
   (lint) pass: dedupe, topic hierarchy, syntheses.
+- `GET /api/rag/stats` — vector library stats (documents, sections, chunks, index).
+- `POST /api/rag/ingest` — `{ "urls": [...], "provider?", "model?" }` builds the
+  contextual vector index (and graph hierarchy) for the given pages.
+- `POST /api/rag/search` — `{ "query", "k?", "graph_rag?" }` hierarchical retrieval
+  only (no LLM); returns ranked passages with scores.
+- `POST /api/rag/ask` — `{ "question", "provider?", "model?", "k?", "graph_rag?" }`
+  → grounded answer with citations.
+- `POST /api/rag/eval` — `{ "max_questions?", "k?", "provider?", "model?" }`
+  generates a grounded test set and returns retrieval + answer-quality metrics.
 - `DELETE /api/kg/node/<id>?where=current|overall` — remove a node.
 - `POST /api/kg/ingest/text` — chunk a pasted document into staging.
   Body: `{ "text", "source_title?", "source_url?", "tags?", "chunk_size?", "overlap?" }`.

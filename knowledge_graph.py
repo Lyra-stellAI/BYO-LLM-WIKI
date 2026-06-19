@@ -45,7 +45,8 @@ OVERALL_PATH = DATA_DIR / "overall.json"
 SCHEMA_VERSION = 2
 
 # Node layers / types ---------------------------------------------------------
-LAYER_OF = {"source": 0, "chunk": 1, "entity": 2, "topic": 3, "synthesis": 4}
+# source -> section (contextual summary) -> chunk -> entity -> topic -> synthesis
+LAYER_OF = {"source": 0, "section": 1, "chunk": 2, "entity": 3, "topic": 4, "synthesis": 5}
 
 ENTITY_KINDS = {
     "person", "organization", "place", "concept",
@@ -126,6 +127,7 @@ def _counts(g: dict) -> dict:
     relations = sum(1 for e in g["edges"] if e.get("kind") == "relation")
     return {
         "sources": by_type.get("source", 0),
+        "sections": by_type.get("section", 0),
         "chunks": by_type.get("chunk", 0),
         "entities": by_type.get("entity", 0),
         "topics": by_type.get("topic", 0),
@@ -851,4 +853,61 @@ def add_synthesis(name: str, path: str, abstract: str = "", *, covers=None,
             if tid and not _has_edge(g, sid, tid, "covers"):
                 _add_edge(g, sid, tid, "covers", "covers")
         return sid
+    return _mutate(where, _fn)
+
+
+def add_rag_document(url: str, title: str, date: str, sections: list[dict],
+                     chunks: list[dict], where: str = "overall") -> dict:
+    """Build a hierarchical doc -> section (contextual summary) -> chunk subgraph.
+
+    Re-ingesting the same URL replaces its prior nodes. ``sections`` items need
+    ``id``/``title``/``summary``; ``chunks`` items need ``id``/``section_id``/
+    ``text`` (and optionally ``preview``/``position``). Section and chunk ids are
+    the same ids used by the vector store, so retrieval hits map onto the graph.
+    """
+    url = (url or "").strip()
+
+    def _fn(g):
+        # Drop any prior nodes/edges for this document (idempotent re-ingest).
+        drop = {n["id"] for n in g["nodes"]
+                if n.get("type") in ("source", "section", "chunk")
+                and (n.get("url") == url or n.get("source_url") == url) and url}
+        if drop:
+            g["nodes"] = [n for n in g["nodes"] if n["id"] not in drop]
+            g["edges"] = [e for e in g["edges"]
+                          if e["from"] not in drop and e["to"] not in drop]
+
+        src_id = f"source_{_slugify(url or title) or uuid.uuid4().hex[:8]}"
+        if _node_by_id(g, src_id):
+            src_id = f"source_{uuid.uuid4().hex[:10]}"
+        g["nodes"].append({
+            "id": src_id, "type": "source", "layer": LAYER_OF["source"],
+            "title": title or url, "url": url, "date": date or "",
+            "created_at": _now(),
+        })
+
+        for sec in sections:
+            g["nodes"].append({
+                "id": sec["id"], "type": "section", "layer": LAYER_OF["section"],
+                "title": sec.get("title") or title, "name": sec.get("title") or title,
+                "summary": sec.get("summary", ""), "url": url, "date": date or "",
+                "source_id": src_id, "created_at": _now(),
+            })
+            _add_edge(g, sec["id"], src_id, "in_document", "in document")
+
+        for ch in chunks:
+            text = ch.get("text", "")
+            g["nodes"].append({
+                "id": ch["id"], "type": "chunk", "layer": LAYER_OF["chunk"],
+                "text": text,
+                "preview": ch.get("preview") or ((text[:240] + "…") if len(text) > 240 else text),
+                "url": url, "source_url": url, "source_title": title,
+                "source_id": src_id, "section_id": ch.get("section_id"),
+                "date": date or "", "created_at": _now(), "integrated_at": _now(),
+            })
+            _add_edge(g, ch["id"], src_id, "from_source", "from source")
+            if ch.get("section_id"):
+                _add_edge(g, ch["id"], ch["section_id"], "in_section", "in section")
+        return {"source_id": src_id, "sections": len(sections), "chunks": len(chunks)}
+
     return _mutate(where, _fn)

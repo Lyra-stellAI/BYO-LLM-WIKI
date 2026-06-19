@@ -840,3 +840,30 @@ kbd {
   border-radius: 50%;
   flex: 0 0 auto;
 }
+
+/* --- Library (RAG) tab --- */
+#ragUrls, #ragQuestion {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 0.92rem;
+  outline: none;
+  resize: vertical;
+}
+#ragQuestion { flex: 1 1 280px; }
+#ragUrls:focus, #ragQuestion:focus {
+  border-color: var(--accent-2);
+  box-shadow: 0 0 0 3px rgba(124, 91, 255, 0.18);
+}
+.rag-toggle {
+  font-size: 0.82rem;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}

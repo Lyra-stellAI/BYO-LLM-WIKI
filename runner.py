@@ -100,7 +100,8 @@ def _stage_and_integrate(sources, provider, model, *, use_ai: bool, chunk_size: 
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Local knowledge library agent (deepagents harness).")
-    p.add_argument("--mode", required=True, choices=["init", "ingest", "query", "lint"])
+    p.add_argument("--mode", required=True, choices=[
+        "init", "ingest", "query", "lint", "rag-ingest", "rag-ask", "rag-eval"])
     p.add_argument("--topic", default="Knowledge", help="Display name for the library")
     p.add_argument("--workspace", default=None, help="Workspace dir (default: $KG_DATA_DIR/library)")
     p.add_argument("--source", action="append", default=[], help="File or directory to ingest (repeatable)")
@@ -181,6 +182,63 @@ def main(argv=None) -> int:
         print(res["report"])
         print(f"\nEntities: {res['before']['entities']} -> {res['after']['entities']}; "
               f"topics: {res['after']['topics']}")
+        return 0
+
+    if args.mode == "rag-ingest":
+        import pipeline
+        urls = list(args.url or [])
+        for raw in args.source or []:
+            p = Path(raw).expanduser()
+            if p.is_file():
+                urls += [ln.strip() for ln in p.read_text().splitlines()
+                         if ln.strip() and ln.strip().startswith("http")]
+        if not urls:
+            print("error: provide --url (repeatable) or --source <file-of-urls>", file=sys.stderr)
+            return 2
+        def _prog(r):
+            if "error" in r:
+                print(f"  ERROR {r['url']}: {r['error']}", file=sys.stderr)
+            else:
+                print(f"  ok [{r['date']:>14}] {r['sections']:>2} sec / {r['chunks']:>3} chunks  {r['title'][:48]}")
+        try:
+            res = pipeline.ingest_urls(urls, provider=args.provider, model=args.model,
+                                       on_progress=_prog)
+        except pipeline.PipelineError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"\nVector store: {res['vector_stats']}")
+        print(f"Graph: {res['graph_stats']}")
+        return 0
+
+    if args.mode == "rag-ask":
+        if not args.question:
+            print("error: --question is required for rag-ask", file=sys.stderr)
+            return 2
+        import rag
+        try:
+            res = rag.answer(args.question, provider=args.provider, model=args.model)
+        except rag.RagError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(res["answer"])
+        if res.get("citations"):
+            print("\n--- Retrieved passages ---")
+            for c in res["citations"]:
+                print(f"  [{c['n']}] score={c.get('score')} {c['date'] or 'n/a'} · {c['title'][:48]} · {c['url']}")
+        return 0
+
+    if args.mode == "rag-eval":
+        import rag, json as _json
+        try:
+            eval_set = rag.build_eval_set(provider=args.provider, model=args.model)
+            report = rag.evaluate(eval_set, provider=args.provider, model=args.model)
+        except rag.RagError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(_json.dumps({k: v for k, v in report.items() if k != "rows"}, indent=2))
+        print("\n--- per-question ---")
+        for r in report["rows"]:
+            print(f"  hit={r['retrieval_hit']} rank={r['rank']} score={r['answer_score']} :: {r['question'][:70]}")
         return 0
 
     return 2

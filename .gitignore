@@ -13,3 +13,4 @@ env/
 data/*.json
 data/*.tmp
 data/library/
+data/vectors/

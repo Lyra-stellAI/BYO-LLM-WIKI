@@ -16,6 +16,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="read">Read</button>
       <button class="tab" data-tab="kg">Knowledge Graph <span id="tabCount" class="tab-count hidden"></span></button>
+      <button class="tab" data-tab="rag">Library Q&amp;A</button>
     </nav>
 
     <section id="tab-read" class="tab-panel active">
@@ -166,6 +167,45 @@
         </div>
       </div>
     </section>
+
+    <section id="tab-rag" class="tab-panel">
+      <div class="agent-panel">
+        <div class="agent-head">
+          <h3>Build the contextual vector library</h3>
+          <span id="ragStatus" class="provider-status"></span>
+        </div>
+        <p class="hint" style="margin-top:0">
+          Paste page URLs (one per line). Each page is fetched, split into
+          sections with an LLM-written contextual summary, chunked, embedded, and
+          indexed for hierarchical retrieval.
+        </p>
+        <textarea id="ragUrls" rows="4" placeholder="https://example.com/article-1&#10;https://example.com/article-2"></textarea>
+        <div class="ingest-actions">
+          <button id="ragIngestBtn" class="btn btn-accent">Ingest →</button>
+          <div id="ragIngestProgress" class="ingest-progress"></div>
+        </div>
+      </div>
+
+      <div class="kg-summary">
+        <div class="kg-stat"><span id="ragDocs">0</span> documents</div>
+        <div class="kg-stat"><span id="ragSections">0</span> sections</div>
+        <div class="kg-stat"><span id="ragChunks">0</span> chunks</div>
+        <div class="kg-stat"><span id="ragIndex">—</span></div>
+      </div>
+
+      <div class="agent-panel">
+        <div class="agent-head">
+          <h3>Ask / search your library</h3>
+          <label class="rag-toggle"><input type="checkbox" id="ragGraph" checked /> graph RAG</label>
+        </div>
+        <div class="agent-ask-row">
+          <input id="ragQuestion" type="text" placeholder="Ask a question grounded in the ingested pages…" autocomplete="off" />
+          <button id="ragAskBtn" class="btn btn-accent">Ask</button>
+          <button id="ragSearchBtn" class="btn btn-secondary" title="Show retrieved passages only (no LLM)">Search</button>
+        </div>
+        <div id="ragAnswer" class="ask-answer hidden"></div>
+      </div>
+    </section>
   </main>
 
   <div id="kgModal" class="modal hidden" role="dialog" aria-modal="true">
@@ -208,5 +248,6 @@
   <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
   <script src="{{ url_for('static', filename='kg.js') }}"></script>
+  <script src="{{ url_for('static', filename='rag.js') }}"></script>
 </body>
 </html>
