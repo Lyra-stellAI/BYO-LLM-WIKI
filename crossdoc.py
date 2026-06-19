@@ -166,8 +166,9 @@ documents and answers the question (1.0 = correct, well-grounded synthesis;
 {{"score": <float>, "reason": "<one sentence>"}}"""
 
 
-def _make_synthesis_judge(provider, model):
-    judge = build_chat_model(provider, model, max_tokens=200)
+def _make_synthesis_judge(provider, model, key="crossdoc_correctness"):
+    # Larger budget: gpt-5* spend "reasoning" tokens out of max_completion_tokens.
+    judge = build_chat_model(provider, model, max_tokens=2048)
 
     def crossdoc_correctness(run, example):
         inp, exp = example.inputs or {}, example.outputs or {}
@@ -184,8 +185,9 @@ def _make_synthesis_judge(provider, model):
                 score = float(j.get("score", 0.0)); reason = j.get("reason", "")
             except Exception:  # noqa: BLE001
                 pass
-        return {"key": "crossdoc_correctness", "score": score, "comment": reason}
+        return {"key": key, "score": score, "comment": reason}
 
+    crossdoc_correctness.__name__ = key
     return crossdoc_correctness
 
 
@@ -206,8 +208,14 @@ def run_experiment(*, provider: str = "auto", model: str | None = None,
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
         raise rag.RagError("No LLM provider configured for the cross-document experiment.")
-    # Judge from a different model family than the generator (avoid self-bias).
-    jp, jm, cross = resolve_judge(rp, rm, judge_provider, judge_model)
+    # Panel of judges from DIFFERENT families than the generator (averages out
+    # any single judge's idiosyncratic strictness). Honors an explicit override.
+    from providers import judge_panel
+    if judge_provider:
+        jp, jm, _ = resolve_judge(rp, rm, judge_provider, judge_model)
+        panel = [(jp, jm)]
+    else:
+        panel = judge_panel(rp) or [resolve_judge(rp, rm)[:2]]
     config.ensure_tracing_project()
 
     client = rag_experiment._client()
@@ -217,11 +225,15 @@ def run_experiment(*, provider: str = "auto", model: str | None = None,
     ds = sync_dataset(client, provider=rp, model=rm)
     name = client.read_dataset(dataset_id=ds["id"]).name
 
-    evaluators = [_retrieval_recall, _retrieval_any, _make_synthesis_judge(jp, jm)]
+    # One synthesis-correctness evaluator per panel judge (separate columns in the UI).
+    panel_keys = [f"correctness_{jp}" for jp, _ in panel]
+    evaluators = [_retrieval_recall, _retrieval_any]
+    evaluators += [_make_synthesis_judge(jp, jm, key=f"correctness_{jp}") for jp, jm in panel]
     if ragas:
         try:
             import ragas_eval
-            evaluators = ragas_eval.make_ragas_evaluators(jp, jm) + evaluators
+            rjp, rjm = panel[0]  # RAGAS judge LLM = first panel member (bounds cost)
+            evaluators = ragas_eval.make_ragas_evaluators(rjp, rjm) + evaluators
         except Exception:  # noqa: BLE001
             pass  # ragas optional
     tag = "mmr" if mmr else ("rerank" if rerank else "base")
@@ -231,13 +243,17 @@ def run_experiment(*, provider: str = "auto", model: str | None = None,
         evaluators=evaluators,
         experiment_prefix=f"crossdoc-{tag}",
         metadata={"eval": "crossdoc", "k": k, "rerank": rerank, "mmr": mmr,
-                  "ragas": ragas, "model": f"{rp}/{rm}", "judge": f"{jp}/{jm}",
-                  "judge_cross_family": cross, "dataset_id": ds["id"]},
+                  "ragas": ragas, "model": f"{rp}/{rm}",
+                  "judge_panel": [f"{p}/{m}" for p, m in panel],
+                  "ragas_judge": f"{panel[0][0]}/{panel[0][1]}", "dataset_id": ds["id"]},
         client=client,
         max_concurrency=max_concurrency,
         blocking=True,
     )
     agg = rag_experiment._aggregate(results)
+    means = agg.get("means", {})
+    panel_scores = [means[k_] for k_ in panel_keys if k_ in means]
+    panel_mean = round(sum(panel_scores) / len(panel_scores), 3) if panel_scores else None
     dataset_url = None
     try:
         dataset_url = getattr(client.read_dataset(dataset_id=ds["id"]), "url", None)
@@ -245,6 +261,6 @@ def run_experiment(*, provider: str = "auto", model: str | None = None,
         pass
     return {"experiment_name": getattr(results, "experiment_name", None),
             "dataset_id": ds["id"], "dataset_url": dataset_url,
-            "metrics": agg.get("means", {}), "n": agg.get("n", 0),
+            "metrics": means, "correctness_panel_mean": panel_mean, "n": agg.get("n", 0),
             "rerank": rerank, "mmr": mmr, "k": k, "generator": f"{rp}/{rm}",
-            "judge": f"{jp}/{jm}", "judge_cross_family": cross}
+            "judge_panel": [f"{p}/{m}" for p, m in panel]}

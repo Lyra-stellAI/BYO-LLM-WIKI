@@ -107,6 +107,31 @@ def resolve_judge(gen_provider: str, gen_model: str, judge_provider: str | None 
     return gen_provider, gen_model, False
 
 
+# Preferred model per family for the LLM-as-judge PANEL (diverse, capable judges).
+JUDGE_PANEL_MODELS = {
+    "openai": "gpt-5-mini",
+    "qwen": "qwen-plus-latest",     # Qwen3
+    "deepseek": "deepseek-chat",    # DeepSeek V3 (latest chat)
+    "anthropic": "claude-sonnet-4-6",
+}
+
+
+def judge_panel(gen_provider: str | None, *, max_judges: int = 3) -> list[tuple[str, str]]:
+    """Build a panel of configured judges from DIFFERENT families than the generator.
+
+    Returns up to ``max_judges`` (provider, model) pairs in preference order. A
+    multi-judge panel averages out any single model's idiosyncratic strictness/bias.
+    """
+    gen_provider = (gen_provider or "").lower()
+    panel: list[tuple[str, str]] = []
+    for p in _JUDGE_PREFERENCE:
+        if p != gen_provider and provider_configured(p):
+            panel.append((p, JUDGE_PANEL_MODELS.get(p, PROVIDERS[p]["default_model"])))
+        if len(panel) >= max_judges:
+            break
+    return panel
+
+
 class ProviderError(RuntimeError):
     """Raised when a chat model cannot be constructed for the agent layer."""
 
@@ -136,10 +161,16 @@ def build_chat_model(provider: str, model: str, *, temperature: float = 0.0,
                 "to use OpenAI-compatible providers (OpenAI/Qwen/DeepSeek) with the agent."
             ) from exc
         base_url = os.environ.get(cfg.get("base_url_env", ""), cfg.get("base_url"))
-        return ChatOpenAI(
-            model=model, api_key=api_key, base_url=base_url,
-            temperature=temperature, max_tokens=max_tokens, timeout=timeout, max_retries=2,
-        )
+        kwargs = {"model": model, "api_key": api_key, "base_url": base_url,
+                  "timeout": timeout, "max_retries": 2}
+        # Reasoning models (gpt-5*, o1/o3) use max_completion_tokens and only the
+        # default temperature; classic chat models use max_tokens + temperature.
+        if model.startswith(("gpt-5", "o1", "o3", "o4")):
+            kwargs["max_completion_tokens"] = max_tokens
+        else:
+            kwargs["temperature"] = temperature
+            kwargs["max_tokens"] = max_tokens
+        return ChatOpenAI(**kwargs)
 
     # Anthropic
     try:
