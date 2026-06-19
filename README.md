@@ -1,4 +1,5 @@
-# Web browser agent
+# Knowledge Library Agent
+
 
 A lightweight Flask web app for building **your own knowledge library** — read
 the web faster, then store, search, query, and continuously refine a layered
