@@ -254,6 +254,23 @@ Each run becomes a comparable **experiment** in the LangSmith UI, so you can dif
 base vs. re-ranked over identical inputs. Cloning the repo into a fresh workspace,
 `rag-dataset` recreates the dataset from the template.
 
+### RAGAS evaluation
+
+`rag-ragas` (and `POST /api/rag/ragas`, `ragas_eval.py`) runs the
+[RAGAS](https://docs.ragas.io) metrics — **faithfulness**, **answer relevancy**,
+and **context precision** (reference-free) — wired as LangSmith evaluators over
+the same dataset, with the RAG pipeline (answer + full retrieved contexts) as the
+target. RAGAS uses Claude as the judge LLM and OpenAI embeddings. Results land as
+a `ragas-*` experiment in LangSmith alongside the other experiments.
+
+```bash
+python runner.py --mode rag-ragas            # RAGAS metrics over the dataset
+python runner.py --mode rag-ragas --rerank   # same, with the re-ranker on
+```
+
+`ragas` is an optional dependency (`pip install ragas`); it is imported lazily
+and the rest of the app runs without it.
+
 ## Endpoints
 
 - `GET /api/providers` — list configured providers, suggested models, and
@@ -290,6 +307,8 @@ base vs. re-ranked over identical inputs. Cloning the repo into a fresh workspac
   ensures the dataset (by ID, from the template) and runs an evaluation experiment.
 - `POST /api/rag/dataset` — sync the committed eval template to LangSmith
   (`{ "export": true }` writes the template from the LangSmith dataset instead).
+- `POST /api/rag/ragas` — `{ "rerank?", "k?", "provider?", "model?" }` runs the
+  RAGAS metrics as a LangSmith experiment over the eval dataset.
 
 `/api/rag/ask` and `/api/rag/search` also accept `"rerank": true`.
 - `DELETE /api/kg/node/<id>?where=current|overall` — remove a node.

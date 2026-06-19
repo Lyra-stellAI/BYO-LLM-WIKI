@@ -487,6 +487,23 @@ def api_rag_eval():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/rag/ragas", methods=["POST"])
+def api_rag_ragas():
+    """Run a RAGAS evaluation (faithfulness/answer-relevancy/context-precision) as a
+    LangSmith experiment over the eval dataset."""
+    data = request.get_json(silent=True) or {}
+    provider = (data.get("provider") or "auto").strip().lower()
+    model = (data.get("model") or "").strip()
+    rerank = bool(data.get("rerank", False))
+    k = int(data.get("k") or 6)
+    try:
+        import ragas_eval
+        return jsonify(ragas_eval.run_ragas_experiment(
+            provider=provider, model=model, rerank=rerank, k=k))
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/rag/dataset", methods=["POST"])
 def api_rag_dataset():
     """Sync the committed eval template to LangSmith (or ?export=1 to pull it down)."""

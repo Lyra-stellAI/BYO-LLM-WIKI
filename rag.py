@@ -153,6 +153,31 @@ Respond in markdown:
 """
 
 
+def _answer_from_hits(question: str, hits: list[dict], rp: str, rm: str) -> str:
+    try:
+        chat = build_chat_model(rp, rm, max_tokens=1200)
+    except ProviderError as exc:
+        raise RagError(str(exc)) from exc
+    return _gen(chat, _RAG_PROMPT.format(question=question.strip(), context=_format_context(hits)))
+
+
+def answer_with_contexts(question: str, *, provider: str = "auto", model: str | None = None,
+                         k: int = 6, vs_name: str = "library", graph_rag: bool = True,
+                         rerank_hits: bool = False) -> dict:
+    """Like answer(), but also returns the full retrieved context texts (for RAGAS)."""
+    rp, rm = resolve_provider_model(provider, model)
+    if not rp:
+        raise RagError("No LLM provider configured.")
+    hits = retrieve(question, k=k, vs_name=vs_name, graph_rag=graph_rag,
+                    rerank_hits=rerank_hits, provider=rp, model=rm)
+    text = (_answer_from_hits(question, hits, rp, rm) if hits
+            else "The knowledge library is empty — ingest some pages first.")
+    return {"answer": text,
+            "contexts": [h.get("text") or "" for h in hits],
+            "urls": [h.get("url") for h in hits],
+            "hits": hits, "provider": rp, "model": rm}
+
+
 @traceable(name="rag.answer", tags=["rag", "qa", "knowledge-library"])
 def answer(question: str, *, provider: str = "auto", model: str | None = None,
            k: int = 6, vs_name: str = "library", graph_rag: bool = True,
@@ -167,11 +192,7 @@ def answer(question: str, *, provider: str = "auto", model: str | None = None,
     if not hits:
         return {"answer": "The knowledge library is empty — ingest some pages first.",
                 "citations": [], "provider": rp, "model": rm}
-    try:
-        chat = build_chat_model(rp, rm, max_tokens=1200)
-    except ProviderError as exc:
-        raise RagError(str(exc)) from exc
-    text = _gen(chat, _RAG_PROMPT.format(question=question.strip(), context=_format_context(hits)))
+    text = _answer_from_hits(question, hits, rp, rm)
     citations = [{
         "n": i + 1, "chunk_id": h["id"], "title": h.get("title"), "url": h.get("url"),
         "date": h.get("date"), "section_title": h.get("section_title"),

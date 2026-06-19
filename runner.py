@@ -103,7 +103,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Local knowledge library agent (deepagents harness).")
     p.add_argument("--mode", required=True, choices=[
         "init", "ingest", "query", "lint",
-        "rag-ingest", "rag-ask", "rag-eval", "rag-experiment", "rag-dataset"])
+        "rag-ingest", "rag-ask", "rag-eval", "rag-experiment", "rag-dataset", "rag-ragas"])
     p.add_argument("--rerank", action="store_true", help="Enable the LLM re-ranker for RAG retrieval")
     p.add_argument("--export", action="store_true",
                    help="rag-dataset: export LangSmith dataset to the template file (instead of syncing up)")
@@ -253,6 +253,17 @@ def main(argv=None) -> int:
         try:
             res = rag_experiment.run_experiment(provider=args.provider, model=args.model,
                                                 rerank=args.rerank)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(_json.dumps(res, indent=2))
+        return 0
+
+    if args.mode == "rag-ragas":
+        import ragas_eval, json as _json
+        try:
+            res = ragas_eval.run_ragas_experiment(provider=args.provider, model=args.model,
+                                                  rerank=args.rerank)
         except Exception as exc:  # noqa: BLE001
             print(f"error: {exc}", file=sys.stderr)
             return 1
