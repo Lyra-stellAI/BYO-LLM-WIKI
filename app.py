@@ -439,7 +439,7 @@ def api_rag_search():
         return jsonify({"error": "A query is required."}), 400
     k = int(data.get("k") or 8)
     graph_rag = bool(data.get("graph_rag", True))
-    rerank = bool(data.get("rerank", False))
+    rerank = bool(data.get("rerank", True))
     try:
         import rag
         hits = rag.retrieve(q, k=k, graph_rag=graph_rag, rerank_hits=rerank)
@@ -458,7 +458,7 @@ def api_rag_ask():
     model = (data.get("model") or "").strip()
     k = int(data.get("k") or 6)
     graph_rag = bool(data.get("graph_rag", True))
-    rerank = bool(data.get("rerank", False))
+    rerank = bool(data.get("rerank", True))
     try:
         import rag
         return jsonify(rag.answer(question, provider=provider, model=model,
@@ -475,7 +475,7 @@ def api_rag_eval():
     k = int(data.get("k") or 6)
     max_q = int(data.get("max_questions") or 10)
     graph_rag = bool(data.get("graph_rag", True))
-    rerank = bool(data.get("rerank", False))
+    rerank = bool(data.get("rerank", True))
     try:
         import rag
         eval_set = data.get("eval_set") or rag.build_eval_set(
@@ -487,6 +487,23 @@ def api_rag_eval():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/rag/crossdoc", methods=["POST"])
+def api_rag_crossdoc():
+    """Build/sync the cross-document eval dataset and run a multi-source experiment."""
+    data = request.get_json(silent=True) or {}
+    provider = (data.get("provider") or "auto").strip().lower()
+    model = (data.get("model") or "").strip()
+    rerank = bool(data.get("rerank", True))
+    k = int(data.get("k") or 8)
+    ragas = bool(data.get("ragas", True))
+    try:
+        import crossdoc
+        return jsonify(crossdoc.run_experiment(provider=provider, model=model,
+                                               rerank=rerank, k=k, ragas=ragas))
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/rag/ragas", methods=["POST"])
 def api_rag_ragas():
     """Run a RAGAS evaluation (faithfulness/answer-relevancy/context-precision) as a
@@ -494,7 +511,7 @@ def api_rag_ragas():
     data = request.get_json(silent=True) or {}
     provider = (data.get("provider") or "auto").strip().lower()
     model = (data.get("model") or "").strip()
-    rerank = bool(data.get("rerank", False))
+    rerank = bool(data.get("rerank", True))
     k = int(data.get("k") or 6)
     try:
         import ragas_eval
@@ -523,7 +540,7 @@ def api_rag_experiment():
     data = request.get_json(silent=True) or {}
     provider = (data.get("provider") or "auto").strip().lower()
     model = (data.get("model") or "").strip()
-    rerank = bool(data.get("rerank", False))
+    rerank = bool(data.get("rerank", True))
     k = int(data.get("k") or 6)
     max_q = int(data.get("max_questions") or 15)
     try:

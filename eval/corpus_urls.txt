@@ -1,0 +1,34 @@
+# Knowledge-library corpus (one URL per line; '#' comments allowed).
+# Ingest with:  python runner.py --mode rag-ingest --source eval/corpus_urls.txt
+
+# --- LangChain: agent harness / evals / observability ---
+https://www.langchain.com/blog/the-art-of-loop-engineering
+https://www.langchain.com/blog/designing-efficient-verifiers-for-legal-agents
+https://www.langchain.com/blog/introducing-rubrics-for-deepagents
+https://www.langchain.com/blog/how-to-build-a-custom-agent-harness
+https://www.langchain.com/blog/interpreter-skills
+https://www.langchain.com/blog/human-judgment-in-the-agent-improvement-loop
+https://www.langchain.com/blog/better-harness-a-recipe-for-harness-hill-climbing-with-evals
+https://www.langchain.com/blog/traces-start-agent-improvement-loop
+https://www.langchain.com/resources/llm-evaluation-benchmarks
+https://www.langchain.com/resources/llm-evaluation-framework
+https://www.langchain.com/resources/agent-observability
+https://www.langchain.com/resources/llm-evals
+https://www.langchain.com/resources/llm-monitoring-observability
+https://www.langchain.com/resources/ai-observability
+https://www.langchain.com/resources/llm-evaluation-metrics
+
+# --- Anthropic research: cyber, science agents, safety/alignment ---
+https://www.anthropic.com/research/project-fetch-phase-two
+https://www.anthropic.com/research/claude-code-expertise
+https://www.anthropic.com/research/agents-in-biology
+https://www.anthropic.com/research/n-days
+https://www.anthropic.com/research/making-claude-a-chemist
+https://www.anthropic.com/research/attack-navigator
+https://www.anthropic.com/news/AI-enabled-cyber-threats-mitre-attack
+https://www.anthropic.com/research/coding-agents-social-sciences
+https://www.anthropic.com/research/exploit-evals
+https://www.anthropic.com/research/trustworthy-agents
+https://www.anthropic.com/research/zero-days
+https://www.anthropic.com/research/shade-arena-sabotage-monitoring
+https://www.anthropic.com/research/agentic-misalignment

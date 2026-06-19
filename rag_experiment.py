@@ -149,7 +149,7 @@ def _aggregate(results) -> dict:
 
 
 def run_experiment(*, provider: str = "auto", model: str | None = None, k: int = 6,
-                   rerank: bool = False, graph_rag: bool = True,
+                   rerank: bool = True, graph_rag: bool = True,
                    max_concurrency: int = 2) -> dict:
     try:
         from langsmith import evaluate

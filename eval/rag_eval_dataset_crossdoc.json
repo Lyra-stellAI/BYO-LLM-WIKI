@@ -1,0 +1,188 @@
+{
+  "name": "Cross-document RAG eval",
+  "dataset_id": "157c1278-d0e4-4228-9783-c10bdde2be36",
+  "langsmith_project_id": "b4ad4c7d-1c1b-426c-9325-68c55f052c73",
+  "description": "Reusable CROSS-DOCUMENT RAG eval: each question requires synthesizing across 2-3 documents. outputs.expected_urls lists the required sources.",
+  "schema": {
+    "inputs": [
+      "question"
+    ],
+    "outputs": [
+      "expected_urls",
+      "titles"
+    ]
+  },
+  "examples": [
+    {
+      "inputs": {
+        "question": "How do the verification and evaluation approaches described in 'Designing Efficient Verifiers for Legal Agents' relate to the broader loop engineering framework, and what role do verifiers play in the hierarchical feedback loops?"
+      },
+      "outputs": {
+        "expected_urls": [
+          "https://www.langchain.com/blog/the-art-of-loop-engineering",
+          "https://www.langchain.com/blog/designing-efficient-verifiers-for-legal-agents"
+        ],
+        "titles": [
+          "The Art of Loop Engineering",
+          "Designing Efficient Verifiers for Legal Agents"
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "question": "Compare how RubricMiddleware for self-evaluation in Deep Agents differs from or complements the human judgment integration approach described in the agent improvement loop guide."
+      },
+      "outputs": {
+        "expected_urls": [
+          "https://www.langchain.com/blog/introducing-rubrics-for-deepagents",
+          "https://www.langchain.com/blog/human-judgment-in-the-agent-improvement-loop"
+        ],
+        "titles": [
+          "Introducing Rubrics: Build Agents that Evaluate and Correct Their Work",
+          "Human judgment in the agent improvement loop"
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "question": "How do traces serve as the foundation for the agent improvement loop, and how does this connect to the Better-Harness system's use of evals as a learning signal?"
+      },
+      "outputs": {
+        "expected_urls": [
+          "https://www.langchain.com/blog/traces-start-agent-improvement-loop",
+          "https://www.langchain.com/blog/better-harness-a-recipe-for-harness-hill-climbing-with-evals"
+        ],
+        "titles": [
+          "The Agent Improvement Loop Starts with a Trace",
+          "Better Harness: A Recipe for Harness Hill-Climbing with Evals"
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "question": "What is the relationship between custom agent harnesses and interpreter skills in terms of how they structure agent execution and reliability?"
+      },
+      "outputs": {
+        "expected_urls": [
+          "https://www.langchain.com/blog/how-to-build-a-custom-agent-harness",
+          "https://www.langchain.com/blog/interpreter-skills"
+        ],
+        "titles": [
+          "How to Build a Custom Agent Harness",
+          "Interpreter Skills: Building Workflows for Agents"
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "question": "How do the limitations of public LLM evaluation benchmarks discussed in 'LLM Evaluation Benchmarks' support the argument for trajectory-based evaluation frameworks presented in 'LLM Evaluation Framework: Trajectories vs. Outputs'?"
+      },
+      "outputs": {
+        "expected_urls": [
+          "https://www.langchain.com/resources/llm-evaluation-benchmarks",
+          "https://www.langchain.com/resources/llm-evaluation-framework"
+        ],
+        "titles": [
+          "LLM Evaluation Benchmarks: What They Measure & Miss",
+          "LLM Evaluation Framework: Trajectories vs. Outputs"
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "question": "Synthesize how AI agent observability, tracing, and evaluation-based monitoring work together as described across the observability and monitoring documents to create a continuous improvement cycle."
+      },
+      "outputs": {
+        "expected_urls": [
+          "https://www.langchain.com/resources/agent-observability",
+          "https://www.langchain.com/resources/llm-monitoring-observability",
+          "https://www.langchain.com/resources/ai-observability"
+        ],
+        "titles": [
+          "AI Agent Observability: Tracing, Testing, and Improving Agents",
+          "Why LLM observability and monitoring need evaluations",
+          "AI observability requires domain experts, not just dashboards"
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "question": "Compare the autonomous task completion capabilities demonstrated in Project Fetch Phase Two with the trustworthy agent framework's requirements for managing risks in autonomous systems."
+      },
+      "outputs": {
+        "expected_urls": [
+          "https://www.anthropic.com/research/project-fetch-phase-two",
+          "https://www.anthropic.com/research/trustworthy-agents"
+        ],
+        "titles": [
+          "Project Fetch: Phase two \\ Anthropic",
+          "Trustworthy agents in practice \\ Anthropic"
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "question": "How do the findings about AI-enabled cyber threats in the ATT&CK Navigator analysis inform the design of evaluation frameworks like SHADE-Arena for detecting sabotage and evasion in LLM agents?"
+      },
+      "outputs": {
+        "expected_urls": [
+          "https://www.anthropic.com/research/attack-navigator",
+          "https://www.anthropic.com/research/shade-arena-sabotage-monitoring"
+        ],
+        "titles": [
+          "Mapping AI-enabled cyber threats: Insights from the LLM ATT&CK Navigator \\ Anthropic",
+          "SHADE-Arena: Evaluating Sabotage and Monitoring in LLM Agents \\ Anthropic"
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "question": "What do the zero-day vulnerability discovery capabilities and N-day exploit acceleration findings reveal about the need for trustworthy agent frameworks and agentic misalignment safeguards?"
+      },
+      "outputs": {
+        "expected_urls": [
+          "https://www.anthropic.com/research/zero-days",
+          "https://www.anthropic.com/research/n-days",
+          "https://www.anthropic.com/research/trustworthy-agents"
+        ],
+        "titles": [
+          "LLM-discovered 0 days \\ Anthropic",
+          "Measuring LLMs' impact on N-day exploits \\ Anthropic",
+          "Trustworthy agents in practice \\ Anthropic"
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "question": "How do the infrastructure requirements for supporting AI agents in biology relate to the broader challenges of building reliable agentic systems across different domains?"
+      },
+      "outputs": {
+        "expected_urls": [
+          "https://www.anthropic.com/research/agents-in-biology",
+          "https://www.anthropic.com/research/trustworthy-agents"
+        ],
+        "titles": [
+          "Paving the way for agents in biology \\ Anthropic",
+          "Trustworthy agents in practice \\ Anthropic"
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "question": "Across the exploit evaluation research (ExploitBench, ExploitGym, zero-days, N-days), what patterns emerge about LLM capabilities that should inform the design of evaluation metrics and monitoring systems for production agents?"
+      },
+      "outputs": {
+        "expected_urls": [
+          "https://www.anthropic.com/research/exploit-evals",
+          "https://www.anthropic.com/research/zero-days",
+          "https://www.langchain.com/resources/llm-evaluation-metrics"
+        ],
+        "titles": [
+          "Measuring LLMs’ ability to develop exploits \\ Anthropic",
+          "LLM-discovered 0 days \\ Anthropic",
+          "LLM Evaluation Metrics: Measuring What Matters for Your Users"
+        ]
+      }
+    }
+  ]
+}

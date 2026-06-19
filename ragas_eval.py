@@ -108,7 +108,7 @@ def _make_target(provider, model, k, rerank, graph_rag):
 
 
 def run_ragas_experiment(*, provider: str = "auto", model: str | None = None, k: int = 6,
-                         rerank: bool = False, graph_rag: bool = True,
+                         rerank: bool = True, graph_rag: bool = True,
                          max_concurrency: int = 1) -> dict:
     if not ragas_available():
         raise rag.RagError("ragas is not installed. Run `pip install ragas`.")

@@ -102,7 +102,7 @@ def rerank(question: str, hits: list[dict], *, top_k: int,
 
 @traceable(name="rag.retrieve", tags=["rag", "retrieval", "knowledge-library"])
 def retrieve(question: str, *, k: int = 6, vs_name: str = "library",
-             n_sections: int = 6, graph_rag: bool = True, rerank_hits: bool = False,
+             n_sections: int = 6, graph_rag: bool = True, rerank_hits: bool = True,
              provider: str = "auto", model: str | None = None) -> list[dict]:
     vs = VectorStore.load(vs_name)
     if not vs.chunks:
@@ -163,7 +163,7 @@ def _answer_from_hits(question: str, hits: list[dict], rp: str, rm: str) -> str:
 
 def answer_with_contexts(question: str, *, provider: str = "auto", model: str | None = None,
                          k: int = 6, vs_name: str = "library", graph_rag: bool = True,
-                         rerank_hits: bool = False) -> dict:
+                         rerank_hits: bool = True) -> dict:
     """Like answer(), but also returns the full retrieved context texts (for RAGAS)."""
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
@@ -181,7 +181,7 @@ def answer_with_contexts(question: str, *, provider: str = "auto", model: str | 
 @traceable(name="rag.answer", tags=["rag", "qa", "knowledge-library"])
 def answer(question: str, *, provider: str = "auto", model: str | None = None,
            k: int = 6, vs_name: str = "library", graph_rag: bool = True,
-           rerank_hits: bool = False) -> dict:
+           rerank_hits: bool = True) -> dict:
     if not question or not question.strip():
         raise RagError("A question is required.")
     rp, rm = resolve_provider_model(provider, model)
@@ -255,7 +255,7 @@ unsupported). Return ONLY JSON: {{"score": <float>, "reason": "<one sentence>"}}
 @traceable(name="rag.evaluate", tags=["rag", "eval", "knowledge-library"])
 def evaluate(eval_set: list[dict], *, provider: str = "auto", model: str | None = None,
              k: int = 6, vs_name: str = "library", graph_rag: bool = True,
-             rerank_hits: bool = False) -> dict:
+             rerank_hits: bool = True) -> dict:
     """Run retrieval + answer for each eval item; score retrieval and answer quality."""
     rp, rm = resolve_provider_model(provider, model)
     judge = build_chat_model(rp, rm, max_tokens=200) if rp else None

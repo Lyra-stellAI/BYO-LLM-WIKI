@@ -206,9 +206,10 @@ layer — persisted under `data/vectors/`. Embeddings use OpenAI
 
 **Retrieval** (`rag.py`) is **hierarchical**: rank section summaries first, then
 drill into chunks, scoring each chunk by a blend of its own similarity and its
-parent section's similarity. An optional **re-ranker** over-fetches candidates
-(≈4×k) and has an LLM re-order them listwise for precision (toggle in the UI, or
-`--rerank` / `"rerank": true`). Optionally enriched with **graph RAG** — 1-hop
+parent section's similarity. A **re-ranker** over-fetches candidates (≈4×k) and
+has an LLM re-order them listwise for precision — it is **on by default** (RAGAS
+showed +31% context precision; disable with the UI toggle, `--no-rerank`, or
+`"rerank": false`). Optionally enriched with **graph RAG** — 1-hop
 knowledge-graph context (entities/topics) for each retrieved chunk. The same
 hierarchy is mirrored into the knowledge graph as `source → section → chunk`.
 
@@ -219,10 +220,9 @@ LangSmith `@traceable`, so runs appear in your tracing project.
 
 ```bash
 # Ingest pages into the contextual vector library
+python runner.py --mode rag-ingest --source eval/corpus_urls.txt   # the bundled corpus
 python runner.py --mode rag-ingest \
-  --url https://www.langchain.com/blog/the-art-of-loop-engineering \
-  --url https://www.langchain.com/resources/llm-evals
-# (or: --source urls.txt  with one URL per line)
+  --url https://www.langchain.com/blog/the-art-of-loop-engineering   # or individual URLs
 
 # Ask a grounded, cited question
 python runner.py --mode rag-ask --question "How do rubrics help agents self-correct?"
@@ -271,6 +271,21 @@ python runner.py --mode rag-ragas --rerank   # same, with the re-ranker on
 `ragas` is an optional dependency (`pip install ragas`); it is imported lazily
 and the rest of the app runs without it.
 
+### Cross-document evaluation
+
+`rag-crossdoc` (and `POST /api/rag/crossdoc`, `crossdoc.py`) builds a separate,
+reusable dataset whose questions each **require synthesizing across 2-3 documents**
+(`outputs.expected_urls` lists the required sources). It is generated from the
+ingested corpus, committed as a template (`eval/rag_eval_dataset_crossdoc.json`),
+uploaded to LangSmith, and evaluated with **retrieval_recall** / **retrieval_any_hit**
+over the expected source set, RAGAS metrics, and an LLM-judged **crossdoc_correctness**
+(synthesis quality). The corpus itself is version-controlled in `eval/corpus_urls.txt`.
+
+```bash
+python runner.py --mode rag-ingest --source eval/corpus_urls.txt   # ingest the corpus
+python runner.py --mode rag-crossdoc                               # build + run cross-doc eval
+```
+
 ## Endpoints
 
 - `GET /api/providers` — list configured providers, suggested models, and
@@ -309,6 +324,8 @@ and the rest of the app runs without it.
   (`{ "export": true }` writes the template from the LangSmith dataset instead).
 - `POST /api/rag/ragas` — `{ "rerank?", "k?", "provider?", "model?" }` runs the
   RAGAS metrics as a LangSmith experiment over the eval dataset.
+- `POST /api/rag/crossdoc` — `{ "rerank?", "k?", "ragas?", "provider?", "model?" }`
+  builds/syncs the cross-document dataset and runs a multi-source experiment.
 
 `/api/rag/ask` and `/api/rag/search` also accept `"rerank": true`.
 - `DELETE /api/kg/node/<id>?where=current|overall` — remove a node.
