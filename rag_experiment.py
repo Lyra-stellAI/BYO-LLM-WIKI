@@ -17,7 +17,7 @@ from pathlib import Path
 
 import config
 import rag
-from providers import build_chat_model, resolve_provider_model
+from providers import build_chat_model, resolve_provider_model, resolve_judge
 
 TEMPLATE_PATH = Path(__file__).parent / "eval" / "rag_eval_dataset.json"
 # Canonical dataset reference is the ID (overridable via env); name is resolved at runtime.
@@ -148,8 +148,9 @@ def _aggregate(results) -> dict:
     return {"n": n, "means": {k: round(sums[k] / counts[k], 3) for k in sums}}
 
 
-def run_experiment(*, provider: str = "auto", model: str | None = None, k: int = 6,
-                   rerank: bool = True, graph_rag: bool = True,
+def run_experiment(*, provider: str = "auto", model: str | None = None,
+                   judge_provider: str | None = None, judge_model: str | None = None,
+                   k: int = 6, rerank: bool = True, graph_rag: bool = True,
                    max_concurrency: int = 2) -> dict:
     try:
         from langsmith import evaluate
@@ -159,6 +160,8 @@ def run_experiment(*, provider: str = "auto", model: str | None = None, k: int =
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
         raise rag.RagError("No LLM provider configured for the experiment.")
+    # Judge from a different model family than the generator (avoid self-bias).
+    jp, jm, cross = resolve_judge(rp, rm, judge_provider, judge_model)
     config.ensure_tracing_project()
 
     client = _client()
@@ -169,10 +172,11 @@ def run_experiment(*, provider: str = "auto", model: str | None = None, k: int =
     results = evaluate(
         _make_target(rp, rm, k, rerank, graph_rag),
         data=name,
-        evaluators=[_retrieval_hit, _reciprocal_rank, _make_answer_judge(rp, rm)],
+        evaluators=[_retrieval_hit, _reciprocal_rank, _make_answer_judge(jp, jm)],
         experiment_prefix=f"rag-{tag}",
         metadata={"k": k, "rerank": rerank, "graph_rag": graph_rag,
-                  "model": f"{rp}/{rm}", "dataset_id": ds["id"]},
+                  "model": f"{rp}/{rm}", "judge": f"{jp}/{jm}",
+                  "judge_cross_family": cross, "dataset_id": ds["id"]},
         client=client,
         max_concurrency=max_concurrency,
         blocking=True,
@@ -185,4 +189,6 @@ def run_experiment(*, provider: str = "auto", model: str | None = None, k: int =
         pass
     return {"experiment_name": getattr(results, "experiment_name", None),
             "dataset_id": ds["id"], "dataset_url": dataset_url, "rerank": rerank,
-            "k": k, "metrics": agg.get("means", {}), "n": agg.get("n", 0)}
+            "k": k, "generator": f"{rp}/{rm}", "judge": f"{jp}/{jm}",
+            "judge_cross_family": cross,
+            "metrics": agg.get("means", {}), "n": agg.get("n", 0)}

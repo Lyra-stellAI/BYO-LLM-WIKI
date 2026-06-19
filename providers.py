@@ -76,6 +76,37 @@ def resolve_provider_model(provider: str | None, model: str | None) -> tuple[str
     return provider, chosen_model
 
 
+# Each provider here is a distinct model family; an LLM judge should not share the
+# generator's family (self-preference bias). Preference order for picking a judge.
+_JUDGE_PREFERENCE = ("openai", "anthropic", "qwen", "deepseek")
+
+
+def default_judge_model(gen_provider: str | None) -> tuple[str | None, str]:
+    """Pick a configured provider from a DIFFERENT family than the generator."""
+    gen_provider = (gen_provider or "").lower()
+    for p in _JUDGE_PREFERENCE:
+        if p != gen_provider and provider_configured(p):
+            return p, PROVIDERS[p]["default_model"]
+    return None, ""
+
+
+def resolve_judge(gen_provider: str, gen_model: str, judge_provider: str | None = None,
+                  judge_model: str | None = None) -> tuple[str, str, bool]:
+    """Resolve the (provider, model, cross_family) to use as an LLM judge.
+
+    Prefers an explicit judge, else a different-family configured provider, else
+    falls back to the generator (cross_family=False) when nothing else is set.
+    """
+    if judge_provider:
+        jp, jm = resolve_provider_model(judge_provider, judge_model)
+        if jp:
+            return jp, jm, jp != gen_provider
+    jp, jm = default_judge_model(gen_provider)
+    if jp:
+        return jp, jm, True
+    return gen_provider, gen_model, False
+
+
 class ProviderError(RuntimeError):
     """Raised when a chat model cannot be constructed for the agent layer."""
 

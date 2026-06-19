@@ -13,7 +13,7 @@ import re
 
 import embeddings as emb
 import knowledge_graph as kg
-from providers import ProviderError, build_chat_model, resolve_provider_model
+from providers import ProviderError, build_chat_model, resolve_provider_model, resolve_judge
 from vectorstore import VectorStore
 
 try:  # tracing is optional
@@ -259,11 +259,16 @@ unsupported). Return ONLY JSON: {{"score": <float>, "reason": "<one sentence>"}}
 
 @traceable(name="rag.evaluate", tags=["rag", "eval", "knowledge-library"])
 def evaluate(eval_set: list[dict], *, provider: str = "auto", model: str | None = None,
+             judge_provider: str | None = None, judge_model: str | None = None,
              k: int = 6, vs_name: str = "library", graph_rag: bool = True,
              rerank_hits: bool = True, mmr: bool = False, mmr_lambda: float = 0.5) -> dict:
-    """Run retrieval + answer for each eval item; score retrieval and answer quality."""
+    """Run retrieval + answer for each eval item; score retrieval and answer quality.
+
+    The answer judge defaults to a DIFFERENT model family than the generator
+    (avoids self-preference bias); override with judge_provider/judge_model."""
     rp, rm = resolve_provider_model(provider, model)
-    judge = build_chat_model(rp, rm, max_tokens=200) if rp else None
+    jp, jm, cross = resolve_judge(rp, rm, judge_provider, judge_model) if rp else (None, "", False)
+    judge = build_chat_model(jp, jm, max_tokens=200) if jp else None
     rows = []
     hit_at_k = 0
     rr_sum = 0.0
@@ -302,9 +307,10 @@ def evaluate(eval_set: list[dict], *, provider: str = "auto", model: str | None 
     n = max(len(eval_set), 1)
     return {
         "n": len(eval_set), "k": k, "graph_rag": graph_rag, "reranked": rerank_hits,
+        "mmr": mmr,
         "retrieval_hit_rate": round(hit_at_k / n, 3),
         "mrr": round(rr_sum / n, 3),
         "mean_answer_score": round(judge_sum / judged, 3) if judged else None,
-        "provider": rp, "model": rm,
+        "generator": f"{rp}/{rm}", "judge": f"{jp}/{jm}", "judge_cross_family": cross,
         "rows": rows,
     }

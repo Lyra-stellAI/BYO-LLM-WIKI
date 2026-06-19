@@ -18,7 +18,7 @@ from pathlib import Path
 import config
 import rag
 import rag_experiment
-from providers import build_chat_model, resolve_provider_model
+from providers import build_chat_model, resolve_provider_model, resolve_judge
 from vectorstore import VectorStore
 
 TEMPLATE_PATH = Path(__file__).parent / "eval" / "rag_eval_dataset_crossdoc.json"
@@ -198,13 +198,16 @@ def _make_target(provider, model, k, rerank, graph_rag, mmr=False):
     return target
 
 
-def run_experiment(*, provider: str = "auto", model: str | None = None, k: int = 8,
-                   rerank: bool = True, graph_rag: bool = True, ragas: bool = True,
+def run_experiment(*, provider: str = "auto", model: str | None = None,
+                   judge_provider: str | None = None, judge_model: str | None = None,
+                   k: int = 8, rerank: bool = True, graph_rag: bool = True, ragas: bool = True,
                    mmr: bool = False, n_questions: int = 12, max_concurrency: int = 1) -> dict:
     from langsmith import evaluate
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
         raise rag.RagError("No LLM provider configured for the cross-document experiment.")
+    # Judge from a different model family than the generator (avoid self-bias).
+    jp, jm, cross = resolve_judge(rp, rm, judge_provider, judge_model)
     config.ensure_tracing_project()
 
     client = rag_experiment._client()
@@ -214,11 +217,11 @@ def run_experiment(*, provider: str = "auto", model: str | None = None, k: int =
     ds = sync_dataset(client, provider=rp, model=rm)
     name = client.read_dataset(dataset_id=ds["id"]).name
 
-    evaluators = [_retrieval_recall, _retrieval_any, _make_synthesis_judge(rp, rm)]
+    evaluators = [_retrieval_recall, _retrieval_any, _make_synthesis_judge(jp, jm)]
     if ragas:
         try:
             import ragas_eval
-            evaluators = ragas_eval.make_ragas_evaluators(rp, rm) + evaluators
+            evaluators = ragas_eval.make_ragas_evaluators(jp, jm) + evaluators
         except Exception:  # noqa: BLE001
             pass  # ragas optional
     tag = "mmr" if mmr else ("rerank" if rerank else "base")
@@ -228,7 +231,8 @@ def run_experiment(*, provider: str = "auto", model: str | None = None, k: int =
         evaluators=evaluators,
         experiment_prefix=f"crossdoc-{tag}",
         metadata={"eval": "crossdoc", "k": k, "rerank": rerank, "mmr": mmr,
-                  "ragas": ragas, "model": f"{rp}/{rm}", "dataset_id": ds["id"]},
+                  "ragas": ragas, "model": f"{rp}/{rm}", "judge": f"{jp}/{jm}",
+                  "judge_cross_family": cross, "dataset_id": ds["id"]},
         client=client,
         max_concurrency=max_concurrency,
         blocking=True,
@@ -242,4 +246,5 @@ def run_experiment(*, provider: str = "auto", model: str | None = None, k: int =
     return {"experiment_name": getattr(results, "experiment_name", None),
             "dataset_id": ds["id"], "dataset_url": dataset_url,
             "metrics": agg.get("means", {}), "n": agg.get("n", 0),
-            "rerank": rerank, "mmr": mmr, "k": k, "provider": rp, "model": rm}
+            "rerank": rerank, "mmr": mmr, "k": k, "generator": f"{rp}/{rm}",
+            "judge": f"{jp}/{jm}", "judge_cross_family": cross}

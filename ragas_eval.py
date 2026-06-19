@@ -29,7 +29,7 @@ for _modname, _attr in (("langchain_community.chat_models.vertexai", "ChatVertex
 import config
 import rag
 import rag_experiment
-from providers import resolve_provider_model, build_chat_model
+from providers import resolve_provider_model, build_chat_model, resolve_judge
 
 _RAGAS_METRICS = ("ragas_faithfulness", "ragas_answer_relevancy", "ragas_context_precision")
 _wrappers_cache: dict = {}
@@ -107,8 +107,9 @@ def _make_target(provider, model, k, rerank, graph_rag):
     return target
 
 
-def run_ragas_experiment(*, provider: str = "auto", model: str | None = None, k: int = 6,
-                         rerank: bool = True, graph_rag: bool = True,
+def run_ragas_experiment(*, provider: str = "auto", model: str | None = None,
+                         judge_provider: str | None = None, judge_model: str | None = None,
+                         k: int = 6, rerank: bool = True, graph_rag: bool = True,
                          max_concurrency: int = 1) -> dict:
     if not ragas_available():
         raise rag.RagError("ragas is not installed. Run `pip install ragas`.")
@@ -120,13 +121,15 @@ def run_ragas_experiment(*, provider: str = "auto", model: str | None = None, k:
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
         raise rag.RagError("No LLM provider configured for the RAGAS experiment.")
+    # RAGAS judge LLM must be a different family than the generator (avoid self-bias).
+    jp, jm, cross = resolve_judge(rp, rm, judge_provider, judge_model)
     config.ensure_tracing_project()
 
     client = rag_experiment._client()
     ds = rag_experiment.sync_dataset(client)          # ensure dataset is uploaded
     name = client.read_dataset(dataset_id=ds["id"]).name
 
-    evaluators = make_ragas_evaluators(rp, rm) + [rag_experiment._retrieval_hit]
+    evaluators = make_ragas_evaluators(jp, jm) + [rag_experiment._retrieval_hit]
     tag = "rerank" if rerank else "base"
     results = evaluate(
         _make_target(rp, rm, k, rerank, graph_rag),
@@ -134,7 +137,8 @@ def run_ragas_experiment(*, provider: str = "auto", model: str | None = None, k:
         evaluators=evaluators,
         experiment_prefix=f"ragas-{tag}",
         metadata={"eval": "ragas", "k": k, "rerank": rerank, "graph_rag": graph_rag,
-                  "model": f"{rp}/{rm}", "dataset_id": ds["id"]},
+                  "model": f"{rp}/{rm}", "judge": f"{jp}/{jm}",
+                  "judge_cross_family": cross, "dataset_id": ds["id"]},
         client=client,
         max_concurrency=max_concurrency,
         blocking=True,
@@ -148,4 +152,5 @@ def run_ragas_experiment(*, provider: str = "auto", model: str | None = None, k:
     return {"experiment_name": getattr(results, "experiment_name", None),
             "dataset_id": ds["id"], "dataset_url": dataset_url,
             "metrics": agg.get("means", {}), "n": agg.get("n", 0),
-            "rerank": rerank, "k": k, "provider": rp, "model": rm}
+            "rerank": rerank, "k": k, "generator": f"{rp}/{rm}",
+            "judge": f"{jp}/{jm}", "judge_cross_family": cross}

@@ -38,6 +38,8 @@
   const enabledLayers = new Set(Object.keys(LAYERS));
   let lastGraph = { nodes: [], edges: [] };
   let agentReady = false;
+  let currentGranularity = "";
+  const kgGranularityEl = $("#kgGranularity");
 
   function esc(s = "") {
     return String(s)
@@ -139,8 +141,12 @@
       renderList(currentList, current.nodes.filter((n) => n.type === "chunk"), "current", "Nothing in staging yet. Highlight text in a summary or paste into the input and click + KG.");
       const overallChunks = overall.nodes.filter((n) => n.type === "chunk").slice().reverse().slice(0, 20);
       renderList(overallList, overallChunks, "overall", "Nothing integrated yet. Add chunks to staging and click Integrate.");
-      lastGraph = overall;
-      renderGraph(overall);
+      if (currentGranularity) {
+        const gv = await fetch(`/api/kg/graph?where=overall&granularity=${currentGranularity}`).then((r) => r.json());
+        lastGraph = gv; renderGraph(gv);
+      } else {
+        lastGraph = overall; renderGraph(overall);
+      }
       const totalStaged = statsRes.current.chunks;
       if (totalStaged > 0) {
         tabCount.textContent = totalStaged;
@@ -550,6 +556,10 @@
 
   kgSearchBtn.addEventListener("click", searchKg);
   kgRefreshBtn.addEventListener("click", refresh);
+  if (kgGranularityEl) kgGranularityEl.addEventListener("change", () => {
+    currentGranularity = kgGranularityEl.value;
+    refresh();
+  });
   kgQueryEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); searchKg(); }
   });

@@ -142,6 +142,32 @@ def stats() -> dict:
         return {"current": _counts(_load(CURRENT_PATH)), "overall": _counts(_load(OVERALL_PATH))}
 
 
+# Node types to include at each zoom level (coarse -> fine).
+_GRANULARITY_TYPES = {
+    "document": {"source", "topic", "synthesis"},
+    "section": {"source", "section", "topic", "synthesis"},
+    "chunk": {"source", "section", "chunk", "entity", "topic", "synthesis"},
+}
+
+
+def granularity_view(where: str = "overall", level: str = "section") -> dict:
+    """Return the graph at a given zoom level.
+
+    - ``document``: the high-level map (sources, topics, syntheses).
+    - ``section``:  + contextual-summary sections under each source.
+    - ``chunk``:    the full graph (down to chunks and entities).
+
+    Edges are kept only between included nodes.
+    """
+    g = get_graph(where)
+    types = _GRANULARITY_TYPES.get(level, _GRANULARITY_TYPES["chunk"])
+    keep = {n["id"] for n in g["nodes"] if n.get("type") in types}
+    nodes = [n for n in g["nodes"] if n["id"] in keep]
+    edges = [e for e in g["edges"] if e["from"] in keep and e["to"] in keep]
+    return {"level": level, "nodes": nodes, "edges": edges,
+            "counts": _counts({"nodes": nodes, "edges": edges})}
+
+
 # --- Staging -----------------------------------------------------------------
 def add_chunk(text: str, *, source_url: str | None = None, source_title: str | None = None,
               tags: list[str] | None = None, note: str | None = None) -> dict:

@@ -119,6 +119,12 @@ Typed edges connect the layers: `from_source`, `mentions`, `relation`
 (entity→entity predicate), `belongs_to` (entity→topic), `subtopic_of`,
 `covers`, and `cites`.
 
+The graph can be viewed at different **granularities** (a "Granularity" selector
+in the KG tab, or `GET /api/kg/graph?granularity=...`): **document** (the
+high-level map of sources/topics/syntheses), **section** (+ contextual-summary
+sections), or **chunk** (the full fine-grained graph). Coarse levels summarize;
+fine levels expose evidence.
+
 The structured graph is stored as JSON in `data/current.json` (staging) and
 `data/overall.json` (integrated). The agent's human-readable wiki layer lives
 under `data/library/wiki/` (`index.md` catalog, `topics/`, `synthesis/`,
@@ -257,6 +263,13 @@ Each run becomes a comparable **experiment** in the LangSmith UI, so you can dif
 base vs. re-ranked over identical inputs. Cloning the repo into a fresh workspace,
 `rag-dataset` recreates the dataset from the template.
 
+> **Judge ≠ generator family.** All LLM-judged metrics (answer_correctness,
+> crossdoc_correctness, and the RAGAS judge) default to a **different model family**
+> than the answer generator to avoid self-preference bias — e.g. Claude generates,
+> GPT-4o-mini judges. Override with `judge_provider`/`judge_model`
+> (`providers.resolve_judge`); experiment metadata records the judge and a
+> `judge_cross_family` flag.
+
 ### RAGAS evaluation
 
 `rag-ragas` (and `POST /api/rag/ragas`, `ragas_eval.py`) runs the
@@ -300,7 +313,8 @@ python runner.py --mode rag-crossdoc                               # build + run
   provider's default.
 - `GET /api/kg/stats` — per-store counts `{sources, chunks, entities, topics,
   syntheses, edges, relations}` for `current` and `overall`.
-- `GET /api/kg/graph?where=current|overall` — full nodes + edges (with `layer`).
+- `GET /api/kg/graph?where=current|overall[&granularity=document|section|chunk]` —
+  nodes + edges (with `layer`); `granularity` returns a zoom-level subgraph.
 - `POST /api/kg/add` — `{ "text", "source_title?", "source_url?", "tags?", "note?" }`
   adds a chunk to the staging graph.
 - `POST /api/kg/integrate` — `{ "provider?", "model?", "use_ai?", "use_agent?" }`
