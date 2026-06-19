@@ -117,7 +117,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--text", default=None, help="Raw text to ingest")
     p.add_argument("--title", default=None, help="Source title for --text")
     p.add_argument("--question", default=None, help="Question for query mode")
-    p.add_argument("--provider", default="auto", help="auto|anthropic|openai|qwen|deepseek")
+    p.add_argument("--provider", default="auto",
+                   help="auto|anthropic|openai|qwen|deepseek|gemini|mistral")
     p.add_argument("--model", default=None, help="Model id override")
     p.add_argument("--chunk-size", type=int, default=800)
     p.add_argument("--overlap", type=int, default=120)
