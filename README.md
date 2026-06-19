@@ -264,12 +264,14 @@ Each run becomes a comparable **experiment** in the LangSmith UI, so you can dif
 base vs. re-ranked over identical inputs. Cloning the repo into a fresh workspace,
 `rag-dataset` recreates the dataset from the template.
 
-> **Judge ≠ generator family.** All LLM-judged metrics (answer_correctness,
-> crossdoc_correctness, and the RAGAS judge) default to a **different model family**
-> than the answer generator to avoid self-preference bias — e.g. Claude generates,
-> GPT-4o-mini judges. Override with `judge_provider`/`judge_model`
-> (`providers.resolve_judge`); experiment metadata records the judge and a
-> `judge_cross_family` flag.
+> **Judge ≠ generator family.** LLM-judged metrics never use the generator's own
+> family (self-preference bias). The single-judge path (`providers.resolve_judge`)
+> picks a different-family model; the **cross-document** eval goes further and uses
+> a **judge panel** of diverse families (`providers.judge_panel` →
+> `gpt-5-mini` + `qwen-plus-latest` + `deepseek-chat`), scoring one
+> `correctness_<judge>` column per judge plus a panel mean to average out any
+> single model's strictness. Absolute LLM-judge scores are judge-dependent, so
+> deterministic metrics (retrieval recall/hit) are the most comparable across runs.
 
 ### RAGAS evaluation
 
@@ -300,8 +302,25 @@ over the expected source set, RAGAS metrics, and an LLM-judged **crossdoc_correc
 
 ```bash
 python runner.py --mode rag-ingest --source eval/corpus_urls.txt   # ingest the corpus
-python runner.py --mode rag-crossdoc                               # build + run cross-doc eval
+python runner.py --mode kg-extract                                 # populate entities + topics
+python runner.py --mode rag-crossdoc --mmr                         # cross-doc eval, MMR retrieval
+python runner.py --mode rag-crossdoc --graph-expand                # cross-doc eval, graph-RAG
 ```
+
+### Entity/topic extraction & graph-RAG retrieval
+
+RAG ingest only builds `source → section → chunk`. `kg-extract` (`enrich.py`)
+adds the semantic layers: it extracts entities + typed relations per section
+(concurrently), wires `chunk → entity` mentions, and clusters the top entities
+into **topics** — which makes two things "live":
+
+- **Graph-RAG retrieval** (`--graph-expand` / `rag.retrieve(graph_expand=True)`):
+  seed with vector search, take the entities of the top hits, then pull in chunks
+  that mention those entities **in other documents** — a non-embedding recall path
+  for multi-hop questions. (Caveat: generic "hub" entities can over-connect docs,
+  so it trades precision for recall; compare it against MMR on the cross-doc set.)
+- **Document map**: `GET /api/kg/graph?granularity=document` connects sources that
+  share ≥2 entities, turning the corpus into a navigable thematic graph.
 
 ## Endpoints
 
