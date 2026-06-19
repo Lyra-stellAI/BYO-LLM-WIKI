@@ -98,10 +98,10 @@ def make_ragas_evaluators(provider: str, model: str) -> list:
             _safe(cprec, "ragas_context_precision")]
 
 
-def _make_target(provider, model, k, rerank, graph_rag):
+def _make_target(provider, model, k, rerank):
     def target(inputs: dict) -> dict:
         res = rag.answer_with_contexts(inputs["question"], provider=provider, model=model,
-                                       k=k, graph_rag=graph_rag, rerank_hits=rerank)
+                                       k=k, rerank_hits=rerank)
         return {"answer": res["answer"], "retrieved_contexts": res["contexts"],
                 "retrieved_urls": res["urls"]}
     return target
@@ -109,7 +109,7 @@ def _make_target(provider, model, k, rerank, graph_rag):
 
 def run_ragas_experiment(*, provider: str = "auto", model: str | None = None,
                          judge_provider: str | None = None, judge_model: str | None = None,
-                         k: int = 6, rerank: bool = True, graph_rag: bool = True,
+                         k: int = 6, rerank: bool = True,
                          max_concurrency: int = 1) -> dict:
     if not ragas_available():
         raise rag.RagError("ragas is not installed. Run `pip install ragas`.")
@@ -132,11 +132,11 @@ def run_ragas_experiment(*, provider: str = "auto", model: str | None = None,
     evaluators = make_ragas_evaluators(jp, jm) + [rag_experiment._retrieval_hit]
     tag = "rerank" if rerank else "base"
     results = evaluate(
-        _make_target(rp, rm, k, rerank, graph_rag),
+        _make_target(rp, rm, k, rerank),
         data=name,
         evaluators=evaluators,
         experiment_prefix=f"ragas-{tag}",
-        metadata={"eval": "ragas", "k": k, "rerank": rerank, "graph_rag": graph_rag,
+        metadata={"eval": "ragas", "k": k, "rerank": rerank,
                   "model": f"{rp}/{rm}", "judge": f"{jp}/{jm}",
                   "judge_cross_family": cross, "dataset_id": ds["id"]},
         client=client,

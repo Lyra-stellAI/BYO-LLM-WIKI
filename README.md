@@ -219,9 +219,8 @@ showed +31% context precision; disable with the UI toggle, `--no-rerank`, or
 `"rerank": false`). For multi-document questions, **document-aware MMR**
 (`--mmr` / `"mmr": true`) selects the top-k to spread across distinct documents
 (relevance − redundancy, with a same-document penalty), which lifts multi-doc
-retrieval recall. Optionally enriched with **graph RAG** — 1-hop
-knowledge-graph context (entities/topics) for each retrieved chunk. The same
-hierarchy is mirrored into the knowledge graph as `source → section → chunk`.
+retrieval recall. The same hierarchy is mirrored into the knowledge graph as
+`source → section → chunk`.
 
 **Evaluation** (`rag.py`): generates a grounded `(question, expected source)` set
 from the ingested docs, then scores **retrieval hit-rate@k**, **MRR**, and an
@@ -304,23 +303,31 @@ over the expected source set, RAGAS metrics, and an LLM-judged **crossdoc_correc
 python runner.py --mode rag-ingest --source eval/corpus_urls.txt   # ingest the corpus
 python runner.py --mode kg-extract                                 # populate entities + topics
 python runner.py --mode rag-crossdoc --mmr                         # cross-doc eval, MMR retrieval
-python runner.py --mode rag-crossdoc --graph-expand                # cross-doc eval, graph-RAG
 ```
 
-### Entity/topic extraction & graph-RAG retrieval
+### Entity/topic extraction & what the knowledge graph is for
 
 RAG ingest only builds `source → section → chunk`. `kg-extract` (`enrich.py`)
-adds the semantic layers: it extracts entities + typed relations per section
-(concurrently), wires `chunk → entity` mentions, and clusters the top entities
-into **topics** — which makes two things "live":
+adds the semantic layers on top: it extracts entities + typed relations per
+section (concurrently), wires `chunk → entity` mentions, and clusters the top
+entities into **topics**.
 
-- **Graph-RAG retrieval** (`--graph-expand` / `rag.retrieve(graph_expand=True)`):
-  seed with vector search, take the entities of the top hits, then pull in chunks
-  that mention those entities **in other documents** — a non-embedding recall path
-  for multi-hop questions. (Caveat: generic "hub" entities can over-connect docs,
-  so it trades precision for recall; compare it against MMR on the cross-doc set.)
-- **Document map**: `GET /api/kg/graph?granularity=document` connects sources that
-  share ≥2 entities, turning the corpus into a navigable thematic graph.
+Retrieval itself is purely vector-based (hierarchical + re-rank / MMR). Entity
+**graph traversal was evaluated as a retrieval path and dropped** — document-aware
+MMR beat it on cross-document recall *and* judged synthesis quality, because rare
+entities can't bridge documents and generic "hub" entities over-connect them. The
+knowledge graph instead earns its keep in **construction** and **presentation**:
+
+- **Structure & dedup (construction)**: the `source → section → chunk → entity →
+  topic` hierarchy is the index hierarchical retrieval ranks over; `groom` /
+  `Maintain` merges duplicate entities so the same concept across documents
+  resolves to one canonical node — this is what "unifies disparate data".
+- **Document map (presentation)**: `GET /api/kg/graph?granularity=document`
+  connects sources that share ≥2 entities, turning the corpus into a navigable
+  thematic graph.
+- **Zoomable views (presentation)**: `?granularity=document|section|chunk` renders
+  the library at three altitudes; topics provide a canonical vocabulary for
+  browsing, filtering, and provenance.
 
 ## Endpoints
 
@@ -349,9 +356,9 @@ into **topics** — which makes two things "live":
 - `GET /api/rag/stats` — vector library stats (documents, sections, chunks, index).
 - `POST /api/rag/ingest` — `{ "urls": [...], "provider?", "model?" }` builds the
   contextual vector index (and graph hierarchy) for the given pages.
-- `POST /api/rag/search` — `{ "query", "k?", "graph_rag?" }` hierarchical retrieval
-  only (no LLM); returns ranked passages with scores.
-- `POST /api/rag/ask` — `{ "question", "provider?", "model?", "k?", "graph_rag?" }`
+- `POST /api/rag/search` — `{ "query", "k?", "rerank?", "mmr?" }` hierarchical
+  retrieval only (no LLM); returns ranked passages with scores.
+- `POST /api/rag/ask` — `{ "question", "provider?", "model?", "k?", "rerank?", "mmr?" }`
   → grounded answer with citations.
 - `POST /api/rag/eval` — `{ "max_questions?", "k?", "rerank?", "provider?", "model?" }`
   generates a grounded test set and returns retrieval + answer-quality metrics.

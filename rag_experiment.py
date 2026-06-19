@@ -89,10 +89,10 @@ def export_dataset(dataset_id_value: str | None = None, client=None) -> dict:
 
 
 # --- evaluation target + evaluators -----------------------------------------
-def _make_target(provider, model, k, rerank, graph_rag):
+def _make_target(provider, model, k, rerank):
     def target(inputs: dict) -> dict:
         res = rag.answer(inputs["question"], provider=provider, model=model, k=k,
-                         graph_rag=graph_rag, rerank_hits=rerank)
+                         rerank_hits=rerank)
         return {"answer": res.get("answer", ""),
                 "retrieved_urls": [c.get("url") for c in res.get("citations", [])]}
     return target
@@ -150,7 +150,7 @@ def _aggregate(results) -> dict:
 
 def run_experiment(*, provider: str = "auto", model: str | None = None,
                    judge_provider: str | None = None, judge_model: str | None = None,
-                   k: int = 6, rerank: bool = True, graph_rag: bool = True,
+                   k: int = 6, rerank: bool = True,
                    max_concurrency: int = 2) -> dict:
     try:
         from langsmith import evaluate
@@ -170,11 +170,11 @@ def run_experiment(*, provider: str = "auto", model: str | None = None,
 
     tag = "rerank" if rerank else "base"
     results = evaluate(
-        _make_target(rp, rm, k, rerank, graph_rag),
+        _make_target(rp, rm, k, rerank),
         data=name,
         evaluators=[_retrieval_hit, _reciprocal_rank, _make_answer_judge(jp, jm)],
         experiment_prefix=f"rag-{tag}",
-        metadata={"k": k, "rerank": rerank, "graph_rag": graph_rag,
+        metadata={"k": k, "rerank": rerank,
                   "model": f"{rp}/{rm}", "judge": f"{jp}/{jm}",
                   "judge_cross_family": cross, "dataset_id": ds["id"]},
         client=client,

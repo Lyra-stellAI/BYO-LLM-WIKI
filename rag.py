@@ -1,19 +1,17 @@
 """Retrieval-augmented Q&A and evaluation over the contextual vector store.
 
-Retrieval is hierarchical (section summaries -> chunks, see vectorstore.py) and
-optionally enriched with knowledge-graph context (graph RAG). Answers are grounded
-with inline citations. Retrieval and answering are wrapped with LangSmith
-``@traceable`` so runs show up in the configured project.
+Retrieval is hierarchical (section summaries -> chunks, see vectorstore.py) with
+an optional LLM re-ranker or document-aware MMR for cross-document diversity.
+Answers are grounded with inline citations. Retrieval and answering are wrapped
+with LangSmith ``@traceable`` so runs show up in the configured project.
 """
 
 from __future__ import annotations
 
 import json
-import math
 import re
 
 import embeddings as emb
-import knowledge_graph as kg
 from providers import ProviderError, build_chat_model, resolve_provider_model, resolve_judge
 from vectorstore import VectorStore
 
@@ -38,18 +36,6 @@ def _gen(model, prompt: str) -> str:
     if isinstance(content, list):
         return "\n".join(c.get("text", "") for c in content if isinstance(c, dict))
     return str(content)
-
-
-def _graph_context_for(chunk_id: str) -> dict:
-    """Pull 1-hop knowledge-graph context (entities/topics) for a chunk."""
-    sub = kg.neighbors(chunk_id, where="overall", depth=1)
-    ents, topics = [], []
-    for n in sub.get("nodes", []):
-        if n.get("type") == "entity" and n.get("name"):
-            ents.append(n["name"])
-        elif n.get("type") == "topic" and n.get("name"):
-            topics.append(n["name"])
-    return {"entities": sorted(set(ents))[:8], "topics": sorted(set(topics))[:4]}
 
 
 _RERANK_PROMPT = """You are a precise search re-ranker. Given a query and numbered
@@ -101,65 +87,16 @@ def rerank(question: str, hits: list[dict], *, top_k: int,
     return out[:top_k]
 
 
-def _doc_diverse(hits: list[dict], k: int, per_doc_penalty: float = 0.3) -> list[dict]:
-    """Greedy select, penalizing repeated source documents (spread across docs)."""
-    chosen, counts, remaining = [], {}, list(hits)
-    while remaining and len(chosen) < k:
-        best, best_score, best_pos = None, float("-inf"), -1
-        for i, h in enumerate(remaining):
-            s = h.get("score", 0.0) - per_doc_penalty * counts.get(h.get("url"), 0)
-            if s > best_score:
-                best, best_score, best_pos = h, s, i
-        chosen.append(best)
-        counts[best.get("url")] = counts.get(best.get("url"), 0) + 1
-        remaining.pop(best_pos)
-    return chosen
-
-
-def _graph_expand_retrieve(vs, q, k: int, n_sections: int, idf: bool = True) -> list[dict]:
-    """Graph RAG retrieval: vector seed -> entities -> chunks mentioning them across
-    documents (a non-embedding recall path), re-scored and spread across docs.
-
-    With ``idf=True``, expand only on SPECIFIC entities (high inverse document
-    frequency) and skip generic 'hub' entities that over-connect documents."""
-    base = vs.search(q, k=max(k * 3, 18), n_sections=n_sections)
-    ents = []
-    for h in base[:6]:
-        ents += kg.chunk_entities(h["id"])
-    ents = list(dict.fromkeys(ents))
-    if idf and ents:
-        df, n_docs = kg.entity_doc_frequency()
-        scored = []
-        for e in ents:
-            d = df.get(e.lower(), 1)
-            if d >= 0.5 * n_docs:        # skip generic hub entities
-                continue
-            scored.append((math.log((n_docs + 1) / (d + 1)), e))
-        scored.sort(reverse=True)
-        ents = [e for _, e in scored[:8]]
-    else:
-        ents = ents[:12]
-    expand = kg.chunks_mentioning(ents, limit=60) if ents else []
-    cand_ids = list(dict.fromkeys([h["id"] for h in base] + [c["id"] for c in expand]))
-    scores = vs.score_chunks(q, cand_ids)
-    hits = [h for h in (vs.hit_for_id(cid, scores.get(cid, 0.0)) for cid in cand_ids) if h]
-    hits.sort(key=lambda h: -h["score"])
-    return _doc_diverse(hits, k)
-
-
 @traceable(name="rag.retrieve", tags=["rag", "retrieval", "knowledge-library"])
 def retrieve(question: str, *, k: int = 6, vs_name: str = "library",
-             n_sections: int = 6, graph_rag: bool = True, rerank_hits: bool = True,
-             mmr: bool = False, mmr_lambda: float = 0.5, graph_expand: bool = False,
+             n_sections: int = 6, rerank_hits: bool = True,
+             mmr: bool = False, mmr_lambda: float = 0.5,
              provider: str = "auto", model: str | None = None) -> list[dict]:
     vs = VectorStore.load(vs_name)
     if not vs.chunks:
         return []
     q = emb.embed_query(question, model=vs.embed_model)
-    if graph_expand:
-        # Entity-anchored graph expansion across documents (the canonical graph-RAG path).
-        hits = _graph_expand_retrieve(vs, q, k, n_sections)
-    elif mmr:
+    if mmr:
         # Document-aware MMR selects the final k directly (diversity is the goal).
         hits = vs.search(q, k=k, n_sections=n_sections, mmr=True, mmr_lambda=mmr_lambda)
     elif rerank_hits:
@@ -169,22 +106,15 @@ def retrieve(question: str, *, k: int = 6, vs_name: str = "library",
             hits = rerank(question, hits, top_k=k, provider=provider, model=model)
     else:
         hits = vs.search(q, k=k, n_sections=n_sections)
-    if graph_rag:
-        for h in hits:
-            h["graph"] = _graph_context_for(h["id"])
     return hits
 
 
 def _format_context(hits: list[dict]) -> str:
     blocks = []
     for i, h in enumerate(hits, 1):
-        g = h.get("graph") or {}
-        extra = ""
-        if g.get("entities"):
-            extra = f"\nRelated entities: {', '.join(g['entities'])}"
         blocks.append(
             f"[{i}] {h.get('title')} ({h.get('date') or 'n/a'}) — {h.get('url')}\n"
-            f"Context: {h.get('contextual_summary')}{extra}\n"
+            f"Context: {h.get('contextual_summary')}\n"
             f"Passage: {h.get('text')}")
     return "\n\n".join(blocks)
 
@@ -216,16 +146,16 @@ def _answer_from_hits(question: str, hits: list[dict], rp: str, rm: str) -> str:
 
 
 def answer_with_contexts(question: str, *, provider: str = "auto", model: str | None = None,
-                         k: int = 6, vs_name: str = "library", graph_rag: bool = True,
+                         k: int = 6, vs_name: str = "library",
                          rerank_hits: bool = True, mmr: bool = False,
-                         mmr_lambda: float = 0.5, graph_expand: bool = False) -> dict:
+                         mmr_lambda: float = 0.5) -> dict:
     """Like answer(), but also returns the full retrieved context texts (for RAGAS)."""
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
         raise RagError("No LLM provider configured.")
-    hits = retrieve(question, k=k, vs_name=vs_name, graph_rag=graph_rag,
+    hits = retrieve(question, k=k, vs_name=vs_name,
                     rerank_hits=rerank_hits, mmr=mmr, mmr_lambda=mmr_lambda,
-                    graph_expand=graph_expand, provider=rp, model=rm)
+                    provider=rp, model=rm)
     text = (_answer_from_hits(question, hits, rp, rm) if hits
             else "The knowledge library is empty — ingest some pages first.")
     return {"answer": text,
@@ -236,14 +166,14 @@ def answer_with_contexts(question: str, *, provider: str = "auto", model: str | 
 
 @traceable(name="rag.answer", tags=["rag", "qa", "knowledge-library"])
 def answer(question: str, *, provider: str = "auto", model: str | None = None,
-           k: int = 6, vs_name: str = "library", graph_rag: bool = True,
+           k: int = 6, vs_name: str = "library",
            rerank_hits: bool = True, mmr: bool = False, mmr_lambda: float = 0.5) -> dict:
     if not question or not question.strip():
         raise RagError("A question is required.")
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
         raise RagError("No LLM provider configured. Set an API key to use RAG Q&A.")
-    hits = retrieve(question, k=k, vs_name=vs_name, graph_rag=graph_rag,
+    hits = retrieve(question, k=k, vs_name=vs_name,
                     rerank_hits=rerank_hits, mmr=mmr, mmr_lambda=mmr_lambda, provider=rp, model=rm)
     if not hits:
         return {"answer": "The knowledge library is empty — ingest some pages first.",
@@ -255,7 +185,7 @@ def answer(question: str, *, provider: str = "auto", model: str | None = None,
         "score": h.get("score"), "preview": h.get("preview"),
     } for i, h in enumerate(hits)]
     return {"answer": text, "citations": citations, "provider": rp, "model": rm,
-            "k": k, "graph_rag": graph_rag, "reranked": rerank_hits}
+            "k": k, "reranked": rerank_hits, "mmr": mmr}
 
 
 # --- Evaluation --------------------------------------------------------------
@@ -311,7 +241,7 @@ unsupported). Return ONLY JSON: {{"score": <float>, "reason": "<one sentence>"}}
 @traceable(name="rag.evaluate", tags=["rag", "eval", "knowledge-library"])
 def evaluate(eval_set: list[dict], *, provider: str = "auto", model: str | None = None,
              judge_provider: str | None = None, judge_model: str | None = None,
-             k: int = 6, vs_name: str = "library", graph_rag: bool = True,
+             k: int = 6, vs_name: str = "library",
              rerank_hits: bool = True, mmr: bool = False, mmr_lambda: float = 0.5) -> dict:
     """Run retrieval + answer for each eval item; score retrieval and answer quality.
 
@@ -327,7 +257,7 @@ def evaluate(eval_set: list[dict], *, provider: str = "auto", model: str | None 
     judged = 0
     for item in eval_set:
         q, exp = item["question"], item["expected_url"]
-        hits = retrieve(q, k=k, vs_name=vs_name, graph_rag=graph_rag,
+        hits = retrieve(q, k=k, vs_name=vs_name,
                         rerank_hits=rerank_hits, mmr=mmr, mmr_lambda=mmr_lambda, provider=rp, model=rm)
         urls = [h.get("url") for h in hits]
         hit = exp in urls
@@ -335,7 +265,7 @@ def evaluate(eval_set: list[dict], *, provider: str = "auto", model: str | None 
         hit_at_k += 1 if hit else 0
         rr_sum += (1.0 / rank) if rank else 0.0
 
-        ans = answer(q, provider=rp, model=rm, k=k, vs_name=vs_name, graph_rag=graph_rag,
+        ans = answer(q, provider=rp, model=rm, k=k, vs_name=vs_name,
                      rerank_hits=rerank_hits, mmr=mmr, mmr_lambda=mmr_lambda)
         score, reason = None, ""
         if judge is not None:
@@ -357,8 +287,7 @@ def evaluate(eval_set: list[dict], *, provider: str = "auto", model: str | None 
                      "top_url": urls[0] if urls else None})
     n = max(len(eval_set), 1)
     return {
-        "n": len(eval_set), "k": k, "graph_rag": graph_rag, "reranked": rerank_hits,
-        "mmr": mmr,
+        "n": len(eval_set), "k": k, "reranked": rerank_hits, "mmr": mmr,
         "retrieval_hit_rate": round(hit_at_k / n, 3),
         "mrr": round(rr_sum / n, 3),
         "mean_answer_score": round(judge_sum / judged, 3) if judged else None,

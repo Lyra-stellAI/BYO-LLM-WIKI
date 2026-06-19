@@ -841,30 +841,6 @@ def merge_duplicates(where: str = "overall") -> dict:
     return _mutate(where, _fn)
 
 
-def entity_doc_frequency(where: str = "overall") -> tuple[dict, int]:
-    """Return ({entity_name_lower: #distinct source docs mentioning it}, n_docs).
-
-    Used to weight graph expansion by specificity (IDF): generic 'hub' entities
-    (high document frequency) are downweighted vs. rare, discriminative ones.
-    """
-    g = get_graph(where)
-    chunk_src = {n["id"]: n.get("source_id") for n in g["nodes"] if n.get("type") == "chunk"}
-    ent_name = {n["id"]: (n.get("name") or "").lower() for n in g["nodes"] if n.get("type") == "entity"}
-    ent_docs: dict[str, set] = {}
-    for e in g["edges"]:
-        if e.get("kind") == "mentions":
-            src = chunk_src.get(e["from"])
-            if src:
-                ent_docs.setdefault(e["to"], set()).add(src)
-    n_docs = sum(1 for n in g["nodes"] if n.get("type") == "source") or 1
-    df = {}
-    for eid, srcs in ent_docs.items():
-        name = ent_name.get(eid)
-        if name:
-            df[name] = max(df.get(name, 0), len(srcs))
-    return df, n_docs
-
-
 def upsert_topic(name: str, *, summary: str = "", parent: str | None = None,
                  where: str = "overall") -> str | None:
     def _fn(g):
@@ -1069,45 +1045,6 @@ def add_extractions(items: list[dict], where: str = "overall") -> dict:
         return summary
 
     return _mutate(where, _fn)
-
-
-def chunks_mentioning(names_or_ids, where: str = "overall", *, exclude_urls=None,
-                      limit: int = 50) -> list[dict]:
-    """Return chunk nodes that mention any of the given entities (by name/id),
-    optionally excluding some source URLs. The non-embedding retrieval path for graph RAG."""
-    g = get_graph(where)
-    eids = set()
-    for x in names_or_ids:
-        ent = _resolve_entity(g, x)
-        if ent:
-            eids.add(ent["id"])
-    if not eids:
-        return []
-    by_id = {n["id"]: n for n in g["nodes"]}
-    exclude = set(exclude_urls or [])
-    out, seen = [], set()
-    for e in g["edges"]:
-        if e.get("kind") == "mentions" and e["to"] in eids:
-            ch = by_id.get(e["from"])
-            if ch and ch["id"] not in seen and ch.get("url") not in exclude:
-                seen.add(ch["id"])
-                out.append(ch)
-                if len(out) >= limit:
-                    break
-    return out
-
-
-def chunk_entities(chunk_id: str, where: str = "overall") -> list[str]:
-    """Names of entities a chunk mentions (1-hop)."""
-    g = get_graph(where)
-    by_id = {n["id"]: n for n in g["nodes"]}
-    names = []
-    for e in g["edges"]:
-        if e.get("kind") == "mentions" and e["from"] == chunk_id:
-            ent = by_id.get(e["to"])
-            if ent and ent.get("name"):
-                names.append(ent["name"])
-    return names
 
 
 def _shared_entity_edges(g: dict, min_shared: int = 2) -> list[dict]:
