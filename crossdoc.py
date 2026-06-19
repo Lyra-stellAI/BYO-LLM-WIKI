@@ -191,10 +191,11 @@ def _make_synthesis_judge(provider, model, key="crossdoc_correctness"):
     return crossdoc_correctness
 
 
-def _make_target(provider, model, k, rerank, graph_rag, mmr=False):
+def _make_target(provider, model, k, rerank, graph_rag, mmr=False, graph_expand=False):
     def target(inputs: dict) -> dict:
         res = rag.answer_with_contexts(inputs["question"], provider=provider, model=model,
-                                       k=k, graph_rag=graph_rag, rerank_hits=rerank, mmr=mmr)
+                                       k=k, graph_rag=graph_rag, rerank_hits=rerank,
+                                       mmr=mmr, graph_expand=graph_expand)
         return {"answer": res["answer"], "retrieved_contexts": res["contexts"],
                 "retrieved_urls": res["urls"]}
     return target
@@ -203,7 +204,8 @@ def _make_target(provider, model, k, rerank, graph_rag, mmr=False):
 def run_experiment(*, provider: str = "auto", model: str | None = None,
                    judge_provider: str | None = None, judge_model: str | None = None,
                    k: int = 8, rerank: bool = True, graph_rag: bool = True, ragas: bool = True,
-                   mmr: bool = False, n_questions: int = 12, max_concurrency: int = 1) -> dict:
+                   mmr: bool = False, graph_expand: bool = False,
+                   n_questions: int = 12, max_concurrency: int = 1) -> dict:
     from langsmith import evaluate
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
@@ -236,14 +238,14 @@ def run_experiment(*, provider: str = "auto", model: str | None = None,
             evaluators = ragas_eval.make_ragas_evaluators(rjp, rjm) + evaluators
         except Exception:  # noqa: BLE001
             pass  # ragas optional
-    tag = "mmr" if mmr else ("rerank" if rerank else "base")
+    tag = "graphrag" if graph_expand else ("mmr" if mmr else ("rerank" if rerank else "base"))
     results = evaluate(
-        _make_target(rp, rm, k, rerank, graph_rag, mmr=mmr),
+        _make_target(rp, rm, k, rerank, graph_rag, mmr=mmr, graph_expand=graph_expand),
         data=name,
         evaluators=evaluators,
         experiment_prefix=f"crossdoc-{tag}",
         metadata={"eval": "crossdoc", "k": k, "rerank": rerank, "mmr": mmr,
-                  "ragas": ragas, "model": f"{rp}/{rm}",
+                  "graph_expand": graph_expand, "ragas": ragas, "model": f"{rp}/{rm}",
                   "judge_panel": [f"{p}/{m}" for p, m in panel],
                   "ragas_judge": f"{panel[0][0]}/{panel[0][1]}", "dataset_id": ds["id"]},
         client=client,
@@ -262,5 +264,5 @@ def run_experiment(*, provider: str = "auto", model: str | None = None,
     return {"experiment_name": getattr(results, "experiment_name", None),
             "dataset_id": ds["id"], "dataset_url": dataset_url,
             "metrics": means, "correctness_panel_mean": panel_mean, "n": agg.get("n", 0),
-            "rerank": rerank, "mmr": mmr, "k": k, "generator": f"{rp}/{rm}",
-            "judge_panel": [f"{p}/{m}" for p, m in panel]}
+            "rerank": rerank, "mmr": mmr, "graph_expand": graph_expand, "k": k,
+            "generator": f"{rp}/{rm}", "judge_panel": [f"{p}/{m}" for p, m in panel]}

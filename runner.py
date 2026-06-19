@@ -103,11 +103,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Local knowledge library agent (deepagents harness).")
     p.add_argument("--mode", required=True, choices=[
         "init", "ingest", "query", "lint", "rag-ingest", "rag-ask", "rag-eval",
-        "rag-experiment", "rag-dataset", "rag-ragas", "rag-crossdoc"])
+        "rag-experiment", "rag-dataset", "rag-ragas", "rag-crossdoc", "kg-extract"])
     p.add_argument("--rerank", action=argparse.BooleanOptionalAction, default=True,
                    help="Enable the LLM re-ranker for RAG retrieval (default: on; use --no-rerank to disable)")
     p.add_argument("--mmr", action=argparse.BooleanOptionalAction, default=False,
                    help="Use document-aware MMR retrieval (diversifies top-k across docs; lifts multi-doc recall)")
+    p.add_argument("--graph-expand", dest="graph_expand", action=argparse.BooleanOptionalAction,
+                   default=False, help="Use entity-anchored graph-RAG retrieval (expands across docs via the entity graph)")
     p.add_argument("--export", action="store_true",
                    help="rag-dataset: export LangSmith dataset to the template file (instead of syncing up)")
     p.add_argument("--topic", default="Knowledge", help="Display name for the library")
@@ -262,11 +264,27 @@ def main(argv=None) -> int:
         print(_json.dumps(res, indent=2))
         return 0
 
+    if args.mode == "kg-extract":
+        import enrich, json as _json
+        try:
+            ext = enrich.extract_entities(provider=args.provider, model=args.model,
+                                          on_progress=lambda d, t: print(f"  extracted {d}/{t} sections", flush=True))
+            print("entities/relations:", _json.dumps({k: ext[k] for k in
+                  ("entities_added", "relations_added", "mentions_added", "sections_processed")}))
+            top = enrich.build_topics(provider=args.provider, model=args.model)
+            print("topics:", _json.dumps({k: top.get(k) for k in ("topics", "assigned")}))
+            print("library:", _json.dumps(top.get("stats", ext.get("stats"))))
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
     if args.mode == "rag-crossdoc":
         import crossdoc, json as _json
         try:
             res = crossdoc.run_experiment(provider=args.provider, model=args.model,
-                                          rerank=args.rerank, mmr=args.mmr)
+                                          rerank=args.rerank, mmr=args.mmr,
+                                          graph_expand=args.graph_expand)
         except Exception as exc:  # noqa: BLE001
             print(f"error: {exc}", file=sys.stderr)
             return 1

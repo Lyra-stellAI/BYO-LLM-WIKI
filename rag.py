@@ -100,16 +100,50 @@ def rerank(question: str, hits: list[dict], *, top_k: int,
     return out[:top_k]
 
 
+def _doc_diverse(hits: list[dict], k: int, per_doc_penalty: float = 0.3) -> list[dict]:
+    """Greedy select, penalizing repeated source documents (spread across docs)."""
+    chosen, counts, remaining = [], {}, list(hits)
+    while remaining and len(chosen) < k:
+        best, best_score, best_pos = None, float("-inf"), -1
+        for i, h in enumerate(remaining):
+            s = h.get("score", 0.0) - per_doc_penalty * counts.get(h.get("url"), 0)
+            if s > best_score:
+                best, best_score, best_pos = h, s, i
+        chosen.append(best)
+        counts[best.get("url")] = counts.get(best.get("url"), 0) + 1
+        remaining.pop(best_pos)
+    return chosen
+
+
+def _graph_expand_retrieve(vs, q, k: int, n_sections: int) -> list[dict]:
+    """Graph RAG retrieval: vector seed -> entities -> chunks mentioning them across
+    documents (a non-embedding recall path), re-scored and spread across docs."""
+    base = vs.search(q, k=max(k * 3, 18), n_sections=n_sections)
+    ents = []
+    for h in base[:6]:
+        ents += kg.chunk_entities(h["id"])
+    ents = list(dict.fromkeys(ents))[:12]
+    expand = kg.chunks_mentioning(ents, limit=60) if ents else []
+    cand_ids = list(dict.fromkeys([h["id"] for h in base] + [c["id"] for c in expand]))
+    scores = vs.score_chunks(q, cand_ids)
+    hits = [h for h in (vs.hit_for_id(cid, scores.get(cid, 0.0)) for cid in cand_ids) if h]
+    hits.sort(key=lambda h: -h["score"])
+    return _doc_diverse(hits, k)
+
+
 @traceable(name="rag.retrieve", tags=["rag", "retrieval", "knowledge-library"])
 def retrieve(question: str, *, k: int = 6, vs_name: str = "library",
              n_sections: int = 6, graph_rag: bool = True, rerank_hits: bool = True,
-             mmr: bool = False, mmr_lambda: float = 0.5,
+             mmr: bool = False, mmr_lambda: float = 0.5, graph_expand: bool = False,
              provider: str = "auto", model: str | None = None) -> list[dict]:
     vs = VectorStore.load(vs_name)
     if not vs.chunks:
         return []
     q = emb.embed_query(question, model=vs.embed_model)
-    if mmr:
+    if graph_expand:
+        # Entity-anchored graph expansion across documents (the canonical graph-RAG path).
+        hits = _graph_expand_retrieve(vs, q, k, n_sections)
+    elif mmr:
         # Document-aware MMR selects the final k directly (diversity is the goal).
         hits = vs.search(q, k=k, n_sections=n_sections, mmr=True, mmr_lambda=mmr_lambda)
     elif rerank_hits:
@@ -168,13 +202,14 @@ def _answer_from_hits(question: str, hits: list[dict], rp: str, rm: str) -> str:
 def answer_with_contexts(question: str, *, provider: str = "auto", model: str | None = None,
                          k: int = 6, vs_name: str = "library", graph_rag: bool = True,
                          rerank_hits: bool = True, mmr: bool = False,
-                         mmr_lambda: float = 0.5) -> dict:
+                         mmr_lambda: float = 0.5, graph_expand: bool = False) -> dict:
     """Like answer(), but also returns the full retrieved context texts (for RAGAS)."""
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
         raise RagError("No LLM provider configured.")
     hits = retrieve(question, k=k, vs_name=vs_name, graph_rag=graph_rag,
-                    rerank_hits=rerank_hits, mmr=mmr, mmr_lambda=mmr_lambda, provider=rp, model=rm)
+                    rerank_hits=rerank_hits, mmr=mmr, mmr_lambda=mmr_lambda,
+                    graph_expand=graph_expand, provider=rp, model=rm)
     text = (_answer_from_hits(question, hits, rp, rm) if hits
             else "The knowledge library is empty — ingest some pages first.")
     return {"answer": text,

@@ -504,6 +504,7 @@ def api_rag_crossdoc():
     model = (data.get("model") or "").strip()
     rerank = bool(data.get("rerank", True))
     mmr = bool(data.get("mmr", False))
+    graph_expand = bool(data.get("graph_expand", False))
     k = int(data.get("k") or 8)
     ragas = bool(data.get("ragas", True))
     judge_provider = (data.get("judge_provider") or "").strip().lower() or None
@@ -512,7 +513,8 @@ def api_rag_crossdoc():
         import crossdoc
         return jsonify(crossdoc.run_experiment(provider=provider, model=model,
                                                judge_provider=judge_provider, judge_model=judge_model,
-                                               rerank=rerank, mmr=mmr, k=k, ragas=ragas))
+                                               rerank=rerank, mmr=mmr, graph_expand=graph_expand,
+                                               k=k, ragas=ragas))
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": str(e)}), 500
 

@@ -195,6 +195,35 @@ class VectorStore:
             return [c[1] for c in cands[:k]]
         return self._mmr_select(cands, k, mmr_lambda, per_doc_penalty)
 
+    def _row_by_id(self) -> dict:
+        if getattr(self, "_idmap", None) is None or len(self._idmap) != len(self.chunks):
+            self._idmap = {r["id"]: i for i, r in enumerate(self.chunks)}
+        return self._idmap
+
+    def score_chunks(self, query_vec: np.ndarray, chunk_ids: list[str]) -> dict:
+        """Cosine similarity of given chunk ids to the query (for graph expansion)."""
+        q = np.asarray(query_vec, dtype=np.float32)
+        idmap = self._row_by_id()
+        out = {}
+        for cid in chunk_ids:
+            i = idmap.get(cid)
+            if i is not None and self.chunk_emb.size and i < self.chunk_emb.shape[0]:
+                out[cid] = float(self.chunk_emb[i] @ q)
+        return out
+
+    def hit_for_id(self, cid: str, score: float) -> dict | None:
+        i = self._row_by_id().get(cid)
+        if i is None:
+            return None
+        rec = self.chunks[i]
+        return {"id": rec["id"], "url": rec.get("url"), "title": rec.get("title"),
+                "date": rec.get("date"), "section_id": rec.get("section_id"),
+                "section_title": rec.get("section_title"),
+                "contextual_summary": rec.get("contextual_summary"),
+                "text": rec.get("text"),
+                "preview": (rec.get("text") or "")[:240],
+                "chunk_score": round(score, 4), "score": round(score, 4)}
+
     def _mmr_select(self, cands: list, k: int, lam: float, per_doc_penalty: float) -> list[dict]:
         chosen_js: list[int] = []
         chosen_urls: set = set()

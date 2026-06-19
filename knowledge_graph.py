@@ -164,6 +164,8 @@ def granularity_view(where: str = "overall", level: str = "section") -> dict:
     keep = {n["id"] for n in g["nodes"] if n.get("type") in types}
     nodes = [n for n in g["nodes"] if n["id"] in keep]
     edges = [e for e in g["edges"] if e["from"] in keep and e["to"] in keep]
+    if level == "document":
+        edges = edges + _shared_entity_edges(g)
     return {"level": level, "nodes": nodes, "edges": edges,
             "counts": _counts({"nodes": nodes, "edges": edges})}
 
@@ -937,3 +939,126 @@ def add_rag_document(url: str, title: str, date: str, sections: list[dict],
         return {"source_id": src_id, "sections": len(sections), "chunks": len(chunks)}
 
     return _mutate(where, _fn)
+
+
+def add_extractions(items: list[dict], where: str = "overall") -> dict:
+    """Batch-add entities / relations / mentions from extractions over existing chunks.
+
+    ``items`` = [{"chunk_ids": [...], "entities": [...], "relations": [...]}]. One
+    load/save for the whole batch. Mentions link each listed chunk -> entity so
+    chunk-level graph-RAG (1-hop) reaches the entities.
+    """
+    summary = {"entities_added": 0, "entities_reinforced": 0,
+               "relations_added": 0, "mentions_added": 0}
+
+    def _fn(g):
+        index = _entity_index(g)
+        chunk_ids = {n["id"] for n in g["nodes"] if n.get("type") == "chunk"}
+        existing_rel = {(e["from"], e["to"], e.get("label")) for e in g["edges"]
+                        if e.get("kind") == "relation"}
+        existing_men = {(e["from"], e["to"]) for e in g["edges"] if e.get("kind") == "mentions"}
+        for it in items:
+            cids = [c for c in it.get("chunk_ids", []) if c in chunk_ids]
+            name_to_id: dict[str, str] = {}
+            for ent in it.get("entities", []):
+                if isinstance(ent, str):
+                    ent = {"name": ent}
+                name = (ent.get("name") or "").strip()
+                if not name:
+                    continue
+                eid = _upsert_entity(g, index, name, ent.get("kind") or "concept",
+                                     summary=ent.get("summary") or "", aliases=ent.get("aliases"),
+                                     importance=ent.get("importance"), summary_counts=summary)
+                if not eid:
+                    continue
+                name_to_id[name.lower()] = eid
+                for cid in cids:
+                    if (cid, eid) not in existing_men:
+                        _add_edge(g, cid, eid, "mentions", "mentions",
+                                  confidence=ent.get("confidence") or "EXTRACTED", chunk_id=cid)
+                        existing_men.add((cid, eid))
+                        summary["mentions_added"] += 1
+            for rel in it.get("relations", []):
+                if not isinstance(rel, dict):
+                    continue
+                s = (rel.get("source") or "").strip()
+                t = (rel.get("target") or "").strip()
+                pred = (rel.get("predicate") or "related to").strip()
+                if not s or not t:
+                    continue
+                sid = name_to_id.get(s.lower()) or _upsert_entity(g, index, s, "concept",
+                                                                  confidence="INFERRED", summary_counts=summary)
+                tid = name_to_id.get(t.lower()) or _upsert_entity(g, index, t, "concept",
+                                                                  confidence="INFERRED", summary_counts=summary)
+                if not sid or not tid or sid == tid:
+                    continue
+                if (sid, tid, pred) not in existing_rel:
+                    _add_edge(g, sid, tid, "relation", pred, confidence=rel.get("confidence") or "EXTRACTED")
+                    existing_rel.add((sid, tid, pred))
+                    summary["relations_added"] += 1
+        return summary
+
+    return _mutate(where, _fn)
+
+
+def chunks_mentioning(names_or_ids, where: str = "overall", *, exclude_urls=None,
+                      limit: int = 50) -> list[dict]:
+    """Return chunk nodes that mention any of the given entities (by name/id),
+    optionally excluding some source URLs. The non-embedding retrieval path for graph RAG."""
+    g = get_graph(where)
+    eids = set()
+    for x in names_or_ids:
+        ent = _resolve_entity(g, x)
+        if ent:
+            eids.add(ent["id"])
+    if not eids:
+        return []
+    by_id = {n["id"]: n for n in g["nodes"]}
+    exclude = set(exclude_urls or [])
+    out, seen = [], set()
+    for e in g["edges"]:
+        if e.get("kind") == "mentions" and e["to"] in eids:
+            ch = by_id.get(e["from"])
+            if ch and ch["id"] not in seen and ch.get("url") not in exclude:
+                seen.add(ch["id"])
+                out.append(ch)
+                if len(out) >= limit:
+                    break
+    return out
+
+
+def chunk_entities(chunk_id: str, where: str = "overall") -> list[str]:
+    """Names of entities a chunk mentions (1-hop)."""
+    g = get_graph(where)
+    by_id = {n["id"]: n for n in g["nodes"]}
+    names = []
+    for e in g["edges"]:
+        if e.get("kind") == "mentions" and e["from"] == chunk_id:
+            ent = by_id.get(e["to"])
+            if ent and ent.get("name"):
+                names.append(ent["name"])
+    return names
+
+
+def _shared_entity_edges(g: dict, min_shared: int = 2) -> list[dict]:
+    """Connect sources that mention >= min_shared common entities (a document map)."""
+    chunk_src = {n["id"]: n.get("source_id") for n in g["nodes"] if n.get("type") == "chunk"}
+    ent_sources: dict[str, set] = {}
+    for e in g["edges"]:
+        if e.get("kind") == "mentions":
+            src = chunk_src.get(e["from"])
+            if src:
+                ent_sources.setdefault(e["to"], set()).add(src)
+    pair_counts: dict[tuple, int] = {}
+    for srcs in ent_sources.values():
+        ordered = sorted(s for s in srcs if s)
+        for i in range(len(ordered)):
+            for j in range(i + 1, len(ordered)):
+                key = (ordered[i], ordered[j])
+                pair_counts[key] = pair_counts.get(key, 0) + 1
+    out = []
+    for (a, b), c in pair_counts.items():
+        if c >= min_shared:
+            out.append({"id": f"shares_{a}_{b}"[:60], "from": a, "to": b,
+                        "kind": "shares", "label": f"{c} shared", "weight": c})
+    return out
