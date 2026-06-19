@@ -107,29 +107,27 @@ def resolve_judge(gen_provider: str, gen_model: str, judge_provider: str | None 
     return gen_provider, gen_model, False
 
 
-# Preferred model per family for the LLM-as-judge PANEL (diverse, capable judges).
-JUDGE_PANEL_MODELS = {
-    "openai": "gpt-5-mini",
-    "qwen": "qwen-plus-latest",     # Qwen3
-    "deepseek": "deepseek-chat",    # DeepSeek V3 (latest chat)
-    "anthropic": "claude-sonnet-4-6",
-}
+# LLM-as-judge PANEL: diverse, capable models spanning families. (gpt-5.3 is not
+# released; gpt-5.1 is the latest GPT-5.x. qwen3-max is the strong Qwen3 judge.)
+JUDGE_PANEL_CANDIDATES = [
+    ("openai", "gpt-5-mini"),
+    ("openai", "gpt-5.1"),
+    ("qwen", "qwen-plus-latest"),
+    ("qwen", "qwen3-max"),
+    ("deepseek", "deepseek-chat"),
+]
 
 
-def judge_panel(gen_provider: str | None, *, max_judges: int = 3) -> list[tuple[str, str]]:
+def judge_panel(gen_provider: str | None, *, max_judges: int = 6) -> list[tuple[str, str]]:
     """Build a panel of configured judges from DIFFERENT families than the generator.
 
-    Returns up to ``max_judges`` (provider, model) pairs in preference order. A
-    multi-judge panel averages out any single model's idiosyncratic strictness/bias.
+    A multi-judge panel (diverse families/models) averages out any single model's
+    idiosyncratic strictness/bias. Excludes the generator's own family.
     """
     gen_provider = (gen_provider or "").lower()
-    panel: list[tuple[str, str]] = []
-    for p in _JUDGE_PREFERENCE:
-        if p != gen_provider and provider_configured(p):
-            panel.append((p, JUDGE_PANEL_MODELS.get(p, PROVIDERS[p]["default_model"])))
-        if len(panel) >= max_judges:
-            break
-    return panel
+    panel = [(p, m) for p, m in JUDGE_PANEL_CANDIDATES
+             if p != gen_provider and provider_configured(p)]
+    return panel[:max_judges]
 
 
 class ProviderError(RuntimeError):

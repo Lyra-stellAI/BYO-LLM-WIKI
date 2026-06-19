@@ -234,7 +234,9 @@ def run_experiment(*, provider: str = "auto", model: str | None = None,
     if ragas:
         try:
             import ragas_eval
-            rjp, rjm = panel[0]  # RAGAS judge LLM = first panel member (bounds cost)
+            # RAGAS makes many internal calls -> use a fast (non-reasoning) panel judge.
+            rjp, rjm = next(((p, m) for p, m in panel
+                             if not m.startswith(("gpt-5", "o1", "o3", "o4"))), panel[0])
             evaluators = ragas_eval.make_ragas_evaluators(rjp, rjm) + evaluators
         except Exception:  # noqa: BLE001
             pass  # ragas optional

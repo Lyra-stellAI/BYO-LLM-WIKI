@@ -759,6 +759,26 @@ def add_relation(source: str, target: str, predicate: str,
     return _mutate(where, _fn)
 
 
+def _merge_into(g: dict, keep: dict, drop: dict) -> int:
+    """Re-point drop's edges to keep, fold aliases/mentions, remove drop. In-memory."""
+    moved = 0
+    for e in g["edges"]:
+        if e["from"] == drop["id"]:
+            e["from"] = keep["id"]; moved += 1
+        if e["to"] == drop["id"]:
+            e["to"] = keep["id"]; moved += 1
+    aliases = set(keep.get("aliases", [])) | set(drop.get("aliases", []))
+    if drop.get("name"):
+        aliases.add(drop["name"])
+    aliases.discard(keep.get("name", ""))
+    keep["aliases"] = sorted(a for a in aliases if a)
+    keep["mentions"] = keep.get("mentions", 1) + drop.get("mentions", 1)
+    if len(drop.get("summary", "")) > len(keep.get("summary", "")):
+        keep["summary"] = drop["summary"]
+    keep["updated_at"] = _now()
+    return moved
+
+
 def merge_entities(keep: str, drop: str, where: str = "overall") -> dict:
     """Merge entity ``drop`` into ``keep``: re-point edges, fold aliases/mentions,
     and delete the duplicate node. The dropped name becomes an alias of keep."""
@@ -769,30 +789,80 @@ def merge_entities(keep: str, drop: str, where: str = "overall") -> dict:
             return {"ok": False, "error": "entity not found", "keep": bool(k), "drop": bool(d)}
         if k["id"] == d["id"]:
             return {"ok": False, "error": "keep and drop are the same entity"}
-        moved = 0
-        for e in g["edges"]:
-            if e["from"] == d["id"]:
-                e["from"] = k["id"]
-                moved += 1
-            if e["to"] == d["id"]:
-                e["to"] = k["id"]
-                moved += 1
-        # fold metadata
-        aliases = set(k.get("aliases", [])) | set(d.get("aliases", []))
-        if d.get("name"):
-            aliases.add(d["name"])
-        aliases.discard(k.get("name", ""))
-        k["aliases"] = sorted(a for a in aliases if a)
-        k["mentions"] = k.get("mentions", 1) + d.get("mentions", 1)
-        if len(d.get("summary", "")) > len(k.get("summary", "")):
-            k["summary"] = d["summary"]
-        k["updated_at"] = _now()
-        # drop self-loops created by the merge
+        moved = _merge_into(g, k, d)
         g["edges"] = [e for e in g["edges"]
                       if not (e["from"] == k["id"] and e["to"] == k["id"] and e.get("kind") == "relation")]
         g["nodes"] = [n for n in g["nodes"] if n["id"] != d["id"]]
         return {"ok": True, "keep_id": k["id"], "dropped_id": d["id"], "edges_moved": moved}
     return _mutate(where, _fn)
+
+
+def merge_duplicates(where: str = "overall") -> dict:
+    """Batch-merge entities whose names normalize identically (e.g. 'GPT-4' / 'GPT 4').
+
+    One load/save. Keeps the highest-mention member of each group as canonical and
+    de-duplicates edges afterward. Grooming step before graph-RAG / topic building.
+    """
+    def _norm(name: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+    def _fn(g):
+        groups: dict[str, list] = {}
+        for n in g["nodes"]:
+            if n.get("type") == "entity":
+                key = _norm(n.get("name", ""))
+                if key:
+                    groups.setdefault(key, []).append(n)
+        merged, drop_ids = 0, set()
+        for members in groups.values():
+            if len(members) < 2:
+                continue
+            members.sort(key=lambda n: -n.get("mentions", 1))
+            keep = members[0]
+            for d in members[1:]:
+                _merge_into(g, keep, d)
+                drop_ids.add(d["id"])
+                merged += 1
+        if drop_ids:
+            g["nodes"] = [n for n in g["nodes"] if n["id"] not in drop_ids]
+            # de-duplicate edges (merging collapses parallel edges) + drop relation self-loops
+            seen, kept = set(), []
+            for e in g["edges"]:
+                if e["from"] == e["to"] and e.get("kind") == "relation":
+                    continue
+                sig = (e["from"], e["to"], e.get("kind"), e.get("label"))
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                kept.append(e)
+            g["edges"] = kept
+        entities = sum(1 for n in g["nodes"] if n.get("type") == "entity")
+        return {"merged": merged, "entities_after": entities}
+    return _mutate(where, _fn)
+
+
+def entity_doc_frequency(where: str = "overall") -> tuple[dict, int]:
+    """Return ({entity_name_lower: #distinct source docs mentioning it}, n_docs).
+
+    Used to weight graph expansion by specificity (IDF): generic 'hub' entities
+    (high document frequency) are downweighted vs. rare, discriminative ones.
+    """
+    g = get_graph(where)
+    chunk_src = {n["id"]: n.get("source_id") for n in g["nodes"] if n.get("type") == "chunk"}
+    ent_name = {n["id"]: (n.get("name") or "").lower() for n in g["nodes"] if n.get("type") == "entity"}
+    ent_docs: dict[str, set] = {}
+    for e in g["edges"]:
+        if e.get("kind") == "mentions":
+            src = chunk_src.get(e["from"])
+            if src:
+                ent_docs.setdefault(e["to"], set()).add(src)
+    n_docs = sum(1 for n in g["nodes"] if n.get("type") == "source") or 1
+    df = {}
+    for eid, srcs in ent_docs.items():
+        name = ent_name.get(eid)
+        if name:
+            df[name] = max(df.get(name, 0), len(srcs))
+    return df, n_docs
 
 
 def upsert_topic(name: str, *, summary: str = "", parent: str | None = None,

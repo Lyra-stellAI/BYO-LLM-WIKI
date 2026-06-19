@@ -114,3 +114,17 @@ def build_topics(provider: str = "auto", model: str | None = None, *,
             if canonical and kg.assign_entity_to_topic(canonical, tname):
                 assigned += 1
     return {"topics": created, "assigned": assigned, "stats": kg.stats()["overall"]}
+
+
+def groom_entities(*, rebuild_topics: bool = True, provider: str = "auto",
+                   model: str | None = None) -> dict:
+    """Merge duplicate entities (normalized-name dedup) and optionally rebuild topics.
+
+    The deterministic batch dedup is what the agent's Maintain pass does for
+    duplicates, but at full-library scale in a single pass.
+    """
+    res = kg.merge_duplicates("overall")
+    if rebuild_topics:
+        res["topic_build"] = build_topics(provider=provider, model=model)
+    res["stats"] = kg.stats()["overall"]
+    return res

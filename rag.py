@@ -9,6 +9,7 @@ with inline citations. Retrieval and answering are wrapped with LangSmith
 from __future__ import annotations
 
 import json
+import math
 import re
 
 import embeddings as emb
@@ -115,14 +116,29 @@ def _doc_diverse(hits: list[dict], k: int, per_doc_penalty: float = 0.3) -> list
     return chosen
 
 
-def _graph_expand_retrieve(vs, q, k: int, n_sections: int) -> list[dict]:
+def _graph_expand_retrieve(vs, q, k: int, n_sections: int, idf: bool = True) -> list[dict]:
     """Graph RAG retrieval: vector seed -> entities -> chunks mentioning them across
-    documents (a non-embedding recall path), re-scored and spread across docs."""
+    documents (a non-embedding recall path), re-scored and spread across docs.
+
+    With ``idf=True``, expand only on SPECIFIC entities (high inverse document
+    frequency) and skip generic 'hub' entities that over-connect documents."""
     base = vs.search(q, k=max(k * 3, 18), n_sections=n_sections)
     ents = []
     for h in base[:6]:
         ents += kg.chunk_entities(h["id"])
-    ents = list(dict.fromkeys(ents))[:12]
+    ents = list(dict.fromkeys(ents))
+    if idf and ents:
+        df, n_docs = kg.entity_doc_frequency()
+        scored = []
+        for e in ents:
+            d = df.get(e.lower(), 1)
+            if d >= 0.5 * n_docs:        # skip generic hub entities
+                continue
+            scored.append((math.log((n_docs + 1) / (d + 1)), e))
+        scored.sort(reverse=True)
+        ents = [e for _, e in scored[:8]]
+    else:
+        ents = ents[:12]
     expand = kg.chunks_mentioning(ents, limit=60) if ents else []
     cand_ids = list(dict.fromkeys([h["id"] for h in base] + [c["id"] for c in expand]))
     scores = vs.score_chunks(q, cand_ids)
