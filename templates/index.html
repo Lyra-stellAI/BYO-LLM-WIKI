@@ -196,7 +196,10 @@
       <div class="agent-panel">
         <div class="agent-head">
           <h3>Ask / search your library</h3>
-          <label class="rag-toggle"><input type="checkbox" id="ragGraph" checked /> graph RAG</label>
+          <span>
+            <label class="rag-toggle"><input type="checkbox" id="ragGraph" checked /> graph RAG</label>
+            <label class="rag-toggle" style="margin-left:10px"><input type="checkbox" id="ragRerank" /> re-rank</label>
+          </span>
         </div>
         <div class="agent-ask-row">
           <input id="ragQuestion" type="text" placeholder="Ask a question grounded in the ingested pages…" autocomplete="off" />

@@ -51,14 +51,70 @@ def _graph_context_for(chunk_id: str) -> dict:
     return {"entities": sorted(set(ents))[:8], "topics": sorted(set(topics))[:4]}
 
 
+_RERANK_PROMPT = """You are a precise search re-ranker. Given a query and numbered
+passages, order the passages from MOST to LEAST relevant for answering the query.
+
+Query: {query}
+
+Passages:
+{passages}
+
+Return ONLY JSON: {{"ranking": [<passage numbers, best first>]}}.
+Include only passages that are actually relevant; omit clearly irrelevant ones."""
+
+
+@traceable(name="rag.rerank", tags=["rag", "rerank", "knowledge-library"])
+def rerank(question: str, hits: list[dict], *, top_k: int,
+           provider: str = "auto", model: str | None = None) -> list[dict]:
+    """LLM listwise re-rank of candidate passages; returns the top_k reordered."""
+    if len(hits) <= 1:
+        return hits[:top_k]
+    rp, rm = resolve_provider_model(provider, model)
+    if not rp:
+        return hits[:top_k]
+    try:
+        chat = build_chat_model(rp, rm, max_tokens=400)
+    except ProviderError:
+        return hits[:top_k]
+    passages = "\n".join(
+        f"[{i}] {h.get('title')} — {h.get('contextual_summary')}\n{(h.get('text') or '')[:280]}"
+        for i, h in enumerate(hits))
+    raw = _gen(chat, _RERANK_PROMPT.format(query=question, passages=passages))
+    order: list[int] = []
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if m:
+        try:
+            order = [int(x) for x in json.loads(m.group()).get("ranking", [])
+                     if isinstance(x, (int, float))]
+        except Exception:  # noqa: BLE001
+            order = []
+    out, seen = [], set()
+    for pos, idx in enumerate(order):
+        if 0 <= idx < len(hits) and idx not in seen:
+            h = dict(hits[idx]); h["rerank_score"] = round(1.0 / (pos + 1), 4)
+            out.append(h); seen.add(idx)
+    for i, h in enumerate(hits):  # keep any unranked, after, in vector order
+        if i not in seen:
+            h = dict(h); h["rerank_score"] = 0.0
+            out.append(h); seen.add(i)
+    return out[:top_k]
+
+
 @traceable(name="rag.retrieve", tags=["rag", "retrieval", "knowledge-library"])
 def retrieve(question: str, *, k: int = 6, vs_name: str = "library",
-             n_sections: int = 6, graph_rag: bool = True) -> list[dict]:
+             n_sections: int = 6, graph_rag: bool = True, rerank_hits: bool = False,
+             provider: str = "auto", model: str | None = None) -> list[dict]:
     vs = VectorStore.load(vs_name)
     if not vs.chunks:
         return []
     q = emb.embed_query(question, model=vs.embed_model)
-    hits = vs.search(q, k=k, n_sections=n_sections)
+    # Over-fetch candidates when re-ranking, then narrow to k.
+    fetch_k = max(k * 4, 20) if rerank_hits else k
+    hits = vs.search(q, k=fetch_k, n_sections=n_sections)
+    if rerank_hits and hits:
+        hits = rerank(question, hits, top_k=k, provider=provider, model=model)
+    else:
+        hits = hits[:k]
     if graph_rag:
         for h in hits:
             h["graph"] = _graph_context_for(h["id"])
@@ -99,13 +155,15 @@ Respond in markdown:
 
 @traceable(name="rag.answer", tags=["rag", "qa", "knowledge-library"])
 def answer(question: str, *, provider: str = "auto", model: str | None = None,
-           k: int = 6, vs_name: str = "library", graph_rag: bool = True) -> dict:
+           k: int = 6, vs_name: str = "library", graph_rag: bool = True,
+           rerank_hits: bool = False) -> dict:
     if not question or not question.strip():
         raise RagError("A question is required.")
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
         raise RagError("No LLM provider configured. Set an API key to use RAG Q&A.")
-    hits = retrieve(question, k=k, vs_name=vs_name, graph_rag=graph_rag)
+    hits = retrieve(question, k=k, vs_name=vs_name, graph_rag=graph_rag,
+                    rerank_hits=rerank_hits, provider=rp, model=rm)
     if not hits:
         return {"answer": "The knowledge library is empty — ingest some pages first.",
                 "citations": [], "provider": rp, "model": rm}
@@ -120,7 +178,7 @@ def answer(question: str, *, provider: str = "auto", model: str | None = None,
         "score": h.get("score"), "preview": h.get("preview"),
     } for i, h in enumerate(hits)]
     return {"answer": text, "citations": citations, "provider": rp, "model": rm,
-            "k": k, "graph_rag": graph_rag}
+            "k": k, "graph_rag": graph_rag, "reranked": rerank_hits}
 
 
 # --- Evaluation --------------------------------------------------------------
@@ -175,7 +233,8 @@ unsupported). Return ONLY JSON: {{"score": <float>, "reason": "<one sentence>"}}
 
 @traceable(name="rag.evaluate", tags=["rag", "eval", "knowledge-library"])
 def evaluate(eval_set: list[dict], *, provider: str = "auto", model: str | None = None,
-             k: int = 6, vs_name: str = "library", graph_rag: bool = True) -> dict:
+             k: int = 6, vs_name: str = "library", graph_rag: bool = True,
+             rerank_hits: bool = False) -> dict:
     """Run retrieval + answer for each eval item; score retrieval and answer quality."""
     rp, rm = resolve_provider_model(provider, model)
     judge = build_chat_model(rp, rm, max_tokens=200) if rp else None
@@ -186,14 +245,16 @@ def evaluate(eval_set: list[dict], *, provider: str = "auto", model: str | None 
     judged = 0
     for item in eval_set:
         q, exp = item["question"], item["expected_url"]
-        hits = retrieve(q, k=k, vs_name=vs_name, graph_rag=graph_rag)
+        hits = retrieve(q, k=k, vs_name=vs_name, graph_rag=graph_rag,
+                        rerank_hits=rerank_hits, provider=rp, model=rm)
         urls = [h.get("url") for h in hits]
         hit = exp in urls
         rank = (urls.index(exp) + 1) if hit else 0
         hit_at_k += 1 if hit else 0
         rr_sum += (1.0 / rank) if rank else 0.0
 
-        ans = answer(q, provider=rp, model=rm, k=k, vs_name=vs_name, graph_rag=graph_rag)
+        ans = answer(q, provider=rp, model=rm, k=k, vs_name=vs_name, graph_rag=graph_rag,
+                     rerank_hits=rerank_hits)
         score, reason = None, ""
         if judge is not None:
             raw = _gen(judge, _JUDGE_PROMPT.format(
@@ -214,7 +275,7 @@ def evaluate(eval_set: list[dict], *, provider: str = "auto", model: str | None 
                      "top_url": urls[0] if urls else None})
     n = max(len(eval_set), 1)
     return {
-        "n": len(eval_set), "k": k, "graph_rag": graph_rag,
+        "n": len(eval_set), "k": k, "graph_rag": graph_rag, "reranked": rerank_hits,
         "retrieval_hit_rate": round(hit_at_k / n, 3),
         "mrr": round(rr_sum / n, 3),
         "mean_answer_score": round(judge_sum / judged, 3) if judged else None,

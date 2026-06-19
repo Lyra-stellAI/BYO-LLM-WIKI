@@ -202,7 +202,9 @@ layer — persisted under `data/vectors/`. Embeddings use OpenAI
 
 **Retrieval** (`rag.py`) is **hierarchical**: rank section summaries first, then
 drill into chunks, scoring each chunk by a blend of its own similarity and its
-parent section's similarity. Optionally enriched with **graph RAG** — 1-hop
+parent section's similarity. An optional **re-ranker** over-fetches candidates
+(≈4×k) and has an LLM re-order them listwise for precision (toggle in the UI, or
+`--rerank` / `"rerank": true`). Optionally enriched with **graph RAG** — 1-hop
 knowledge-graph context (entities/topics) for each retrieved chunk. The same
 hierarchy is mirrored into the knowledge graph as `source → section → chunk`.
 
@@ -221,9 +223,22 @@ python runner.py --mode rag-ingest \
 # Ask a grounded, cited question
 python runner.py --mode rag-ask --question "How do rubrics help agents self-correct?"
 
-# Generate a test set from the corpus and run the evaluation
-python runner.py --mode rag-eval
+# Generate a test set from the corpus and run the local evaluation
+python runner.py --mode rag-eval                 # add --rerank to A/B the re-ranker
+
+# Create a LangSmith dataset + run an experiment (per-row scores in the UI)
+python runner.py --mode rag-experiment           # base run
+python runner.py --mode rag-experiment --rerank  # re-ranked run on the same dataset
 ```
+
+### LangSmith dataset & experiment
+
+`rag-experiment` (and `POST /api/rag/experiment`, `rag_experiment.py`) creates a
+LangSmith **dataset** (`Trend_analysis RAG eval`) of `question → expected source`
+examples, then runs `langsmith.evaluate` with the RAG pipeline as the target and
+three evaluators — **retrieval_hit**, **reciprocal_rank**, and an LLM-judged
+**answer_correctness**. Each run becomes a comparable **experiment** in the
+LangSmith UI, so you can diff base vs. re-ranked over identical inputs.
 
 ## Endpoints
 
@@ -255,8 +270,12 @@ python runner.py --mode rag-eval
   only (no LLM); returns ranked passages with scores.
 - `POST /api/rag/ask` — `{ "question", "provider?", "model?", "k?", "graph_rag?" }`
   → grounded answer with citations.
-- `POST /api/rag/eval` — `{ "max_questions?", "k?", "provider?", "model?" }`
+- `POST /api/rag/eval` — `{ "max_questions?", "k?", "rerank?", "provider?", "model?" }`
   generates a grounded test set and returns retrieval + answer-quality metrics.
+- `POST /api/rag/experiment` — `{ "rerank?", "k?", "max_questions?", "provider?", "model?" }`
+  creates/refreshes the LangSmith dataset and runs an evaluation experiment.
+
+`/api/rag/ask` and `/api/rag/search` also accept `"rerank": true`.
 - `DELETE /api/kg/node/<id>?where=current|overall` — remove a node.
 - `POST /api/kg/ingest/text` — chunk a pasted document into staging.
   Body: `{ "text", "source_title?", "source_url?", "tags?", "chunk_size?", "overlap?" }`.

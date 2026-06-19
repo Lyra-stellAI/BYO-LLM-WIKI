@@ -101,7 +101,9 @@ def _stage_and_integrate(sources, provider, model, *, use_ai: bool, chunk_size: 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Local knowledge library agent (deepagents harness).")
     p.add_argument("--mode", required=True, choices=[
-        "init", "ingest", "query", "lint", "rag-ingest", "rag-ask", "rag-eval"])
+        "init", "ingest", "query", "lint",
+        "rag-ingest", "rag-ask", "rag-eval", "rag-experiment"])
+    p.add_argument("--rerank", action="store_true", help="Enable the LLM re-ranker for RAG retrieval")
     p.add_argument("--topic", default="Knowledge", help="Display name for the library")
     p.add_argument("--workspace", default=None, help="Workspace dir (default: $KG_DATA_DIR/library)")
     p.add_argument("--source", action="append", default=[], help="File or directory to ingest (repeatable)")
@@ -216,13 +218,14 @@ def main(argv=None) -> int:
             return 2
         import rag
         try:
-            res = rag.answer(args.question, provider=args.provider, model=args.model)
+            res = rag.answer(args.question, provider=args.provider, model=args.model,
+                             rerank_hits=args.rerank)
         except rag.RagError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         print(res["answer"])
         if res.get("citations"):
-            print("\n--- Retrieved passages ---")
+            print(f"\n--- Retrieved passages{' (re-ranked)' if args.rerank else ''} ---")
             for c in res["citations"]:
                 print(f"  [{c['n']}] score={c.get('score')} {c['date'] or 'n/a'} · {c['title'][:48]} · {c['url']}")
         return 0
@@ -231,7 +234,8 @@ def main(argv=None) -> int:
         import rag, json as _json
         try:
             eval_set = rag.build_eval_set(provider=args.provider, model=args.model)
-            report = rag.evaluate(eval_set, provider=args.provider, model=args.model)
+            report = rag.evaluate(eval_set, provider=args.provider, model=args.model,
+                                  rerank_hits=args.rerank)
         except rag.RagError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -239,6 +243,17 @@ def main(argv=None) -> int:
         print("\n--- per-question ---")
         for r in report["rows"]:
             print(f"  hit={r['retrieval_hit']} rank={r['rank']} score={r['answer_score']} :: {r['question'][:70]}")
+        return 0
+
+    if args.mode == "rag-experiment":
+        import rag_experiment, json as _json
+        try:
+            res = rag_experiment.run_experiment(provider=args.provider, model=args.model,
+                                                rerank=args.rerank)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(_json.dumps(res, indent=2))
         return 0
 
     return 2

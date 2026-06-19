@@ -437,9 +437,11 @@ def api_rag_search():
         return jsonify({"error": "A query is required."}), 400
     k = int(data.get("k") or 8)
     graph_rag = bool(data.get("graph_rag", True))
+    rerank = bool(data.get("rerank", False))
     try:
         import rag
-        return jsonify({"query": q, "hits": rag.retrieve(q, k=k, graph_rag=graph_rag)})
+        hits = rag.retrieve(q, k=k, graph_rag=graph_rag, rerank_hits=rerank)
+        return jsonify({"query": q, "reranked": rerank, "hits": hits})
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": str(e)}), 500
 
@@ -454,10 +456,11 @@ def api_rag_ask():
     model = (data.get("model") or "").strip()
     k = int(data.get("k") or 6)
     graph_rag = bool(data.get("graph_rag", True))
+    rerank = bool(data.get("rerank", False))
     try:
         import rag
         return jsonify(rag.answer(question, provider=provider, model=model,
-                                  k=k, graph_rag=graph_rag))
+                                  k=k, graph_rag=graph_rag, rerank_hits=rerank))
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": str(e)}), 500
 
@@ -470,13 +473,31 @@ def api_rag_eval():
     k = int(data.get("k") or 6)
     max_q = int(data.get("max_questions") or 10)
     graph_rag = bool(data.get("graph_rag", True))
+    rerank = bool(data.get("rerank", False))
     try:
         import rag
         eval_set = data.get("eval_set") or rag.build_eval_set(
             provider=provider, model=model, max_questions=max_q)
         report = rag.evaluate(eval_set, provider=provider, model=model,
-                              k=k, graph_rag=graph_rag)
+                              k=k, graph_rag=graph_rag, rerank_hits=rerank)
         return jsonify(report)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rag/experiment", methods=["POST"])
+def api_rag_experiment():
+    """Create/refresh a LangSmith dataset and run an evaluation experiment."""
+    data = request.get_json(silent=True) or {}
+    provider = (data.get("provider") or "auto").strip().lower()
+    model = (data.get("model") or "").strip()
+    rerank = bool(data.get("rerank", False))
+    k = int(data.get("k") or 6)
+    max_q = int(data.get("max_questions") or 15)
+    try:
+        import rag_experiment
+        return jsonify(rag_experiment.run_experiment(
+            provider=provider, model=model, rerank=rerank, k=k, max_questions=max_q))
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": str(e)}), 500
 

@@ -89,7 +89,8 @@
     try {
       const res = await fetch("/api/rag/ask", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q, graph_rag: graphToggle.checked, ...providerModel() }),
+        body: JSON.stringify({ question: q, graph_rag: graphToggle.checked,
+          rerank: document.querySelector("#ragRerank")?.checked || false, ...providerModel() }),
       }).then((r) => r.json());
       if (res.error) throw new Error(res.error);
       let html = `<div class="ask-body">${mdLite(res.answer || "")}</div>`;
@@ -114,7 +115,8 @@
     try {
       const res = await fetch("/api/rag/search", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: q, k: 8, graph_rag: graphToggle.checked }),
+        body: JSON.stringify({ query: q, k: 8, graph_rag: graphToggle.checked,
+          rerank: document.querySelector("#ragRerank")?.checked || false }),
       }).then((r) => r.json());
       if (res.error) throw new Error(res.error);
       if (!res.hits || !res.hits.length) { show(`<div class="ask-note">No matches yet — ingest some pages first.</div>`); return; }
