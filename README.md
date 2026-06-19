@@ -140,6 +140,13 @@ its writes are confined to `/wiki/`. The agent layer needs both an LLM API key
 and the `deepagents` extras installed (see requirements). Without them, the rest
 of the app — search, summarize, ingest, heuristic integrate — still works.
 
+> **Model choice matters for *Maintain*.** The maintenance pass is the most
+> open-ended, multi-step task. Capable models (e.g. Claude Sonnet, GPT-4o,
+> Qwen-plus) converge and write a full report; very small models may loop and
+> hit the step budget (`KG_AGENT_RECURSION_LIMIT`, default 150). That is handled
+> gracefully — changes applied so far are saved and you can re-run Maintain to
+> continue — but for one-shot results prefer a capable model.
+
 ### Command-line agent (`runner.py`)
 
 Mirrors the llm-wiki runner with `init` / `ingest` / `query` / `lint` modes:

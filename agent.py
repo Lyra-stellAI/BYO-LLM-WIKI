@@ -34,7 +34,7 @@ from providers import (
 WORKSPACE_DIR = Path(os.environ.get("KG_DATA_DIR", "data")) / "library"
 WIKI_SUBDIRS = ("topics", "entities", "synthesis", "query")
 
-_RECURSION_LIMIT = int(os.environ.get("KG_AGENT_RECURSION_LIMIT", "80"))
+_RECURSION_LIMIT = int(os.environ.get("KG_AGENT_RECURSION_LIMIT", "150"))
 
 
 class AgentError(RuntimeError):
@@ -136,6 +136,20 @@ Reconcile and strengthen, using the tools:
    /wiki/topics/<slug>.md that unifies the evidence with citations; when a theme
    cuts across topics, write /wiki/synthesis/<slug>.md.
 6. Note contradictions explicitly in the relevant page rather than hiding them.
+
+Work efficiently and decisively. You have a limited tool budget (aim for at most
+~40 tool calls). Prioritize the highest-value fixes — the most obvious duplicate
+merges and a clean core topic map — over exhaustively touching every entity. You
+do NOT need to perfect everything in one pass; partial progress is fine and the
+pass can be re-run. As soon as the key improvements are made, STOP calling tools
+and write the report. Do not loop re-checking nodes you have already handled.
+
+IMPORTANT — converge: First assess with kg_stats, kg_list_topics and a few
+kg_list_entities calls. If the library already looks well-organized (no obvious
+duplicates, entities already sit in sensible topics), do NOT keep searching for
+more work: immediately write a brief report saying the library is healthy and
+STOP. Each entity/topic needs at most one pass; never call the same tool on the
+same node twice.
 
 Finish with a concise markdown report:
 ## Reconciled Changes
@@ -364,18 +378,27 @@ def _collect_citations(result: dict, answer: str) -> list[dict]:
 
 
 def _invoke(agent, prompt: str, *, run_name: str | None = None,
-            tags: list[str] | None = None, metadata: dict | None = None) -> dict:
-    config: dict = {"recursion_limit": _RECURSION_LIMIT}
+            tags: list[str] | None = None, metadata: dict | None = None,
+            recursion_limit: int | None = None) -> dict:
+    config: dict = {"recursion_limit": recursion_limit or _RECURSION_LIMIT}
     if run_name:
         config["run_name"] = run_name
     # Always tag traces so they are easy to find/group in LangSmith.
     config["tags"] = ["knowledge-library", *(tags or [])]
     if metadata:
         config["metadata"] = metadata
-    return agent.invoke(
-        {"messages": [{"role": "user", "content": prompt}]},
-        config=config,
-    )
+    try:
+        return agent.invoke(
+            {"messages": [{"role": "user", "content": prompt}]},
+            config=config,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # A step-budget overflow is not fatal: tool calls mutate the graph
+        # immediately, so progress so far is already persisted. Degrade to a
+        # partial result instead of crashing the whole pass.
+        if type(exc).__name__ == "GraphRecursionError":
+            return {"messages": [], "__partial__": True}
+        raise
 
 
 def _resolve_model(provider: str | None, model: str | None):
@@ -413,13 +436,16 @@ def run_ingest(*, provider=None, model=None, new_entities: list[str] | None = No
         tags=["ingest"],
         metadata={"mode": "ingest", "entities": len(new_entities), "model": f"{rp}/{rm}"},
     )
-    report = _final_message(result) or "Ingest organize pass complete."
+    partial = bool(result.get("__partial__"))
+    report = _final_message(result) or (
+        "Ingest reached its step budget; changes applied so far are saved."
+        if partial else "Ingest organize pass complete.")
     refresh_index(ws, topic)
-    append_log(ws, "ingest.organize", "applied",
+    append_log(ws, "ingest.organize", "partial" if partial else "applied",
                summary=report, metadata={"provider": rp, "model": rm,
                                           "entities": len(new_entities)})
-    return {"ok": True, "report": report, "provider": rp, "model": rm,
-            "stats": kg.stats()["overall"]}
+    return {"ok": True, "report": report, "partial": partial,
+            "provider": rp, "model": rm, "stats": kg.stats()["overall"]}
 
 
 def run_query(question: str, *, provider=None, model=None, file_answer: bool = True,
@@ -437,7 +463,10 @@ def run_query(question: str, *, provider=None, model=None, file_answer: bool = T
         tags=["query"],
         metadata={"mode": "query", "question": question.strip()[:200], "model": f"{rp}/{rm}"},
     )
-    answer = _final_message(result) or "No answer was produced."
+    partial = bool(result.get("__partial__"))
+    answer = _final_message(result) or (
+        "The query reached its step budget before producing a final answer; "
+        "try a more specific question." if partial else "No answer was produced.")
     citations = _collect_citations(result, answer)
 
     filed_path = None
@@ -458,7 +487,7 @@ def run_query(question: str, *, provider=None, model=None, file_answer: bool = T
                summary=answer, metadata={"provider": rp, "model": rm,
                                          "citations": len(citations)})
     return {"ok": True, "answer": answer, "citations": citations,
-            "filed": filed_path, "provider": rp, "model": rm}
+            "filed": filed_path, "partial": partial, "provider": rp, "model": rm}
 
 
 def run_lint(*, provider=None, model=None, topic: str = "Knowledge",
@@ -474,16 +503,21 @@ def run_lint(*, provider=None, model=None, topic: str = "Knowledge",
         tags=["lint", "maintain"],
         metadata={"mode": "lint", "entities_before": before["entities"], "model": f"{rp}/{rm}"},
     )
-    report = _final_message(result) or "Maintenance pass complete."
+    partial = bool(result.get("__partial__"))
+    report = _final_message(result) or (
+        "Maintenance reached its step budget (recursion limit); the changes "
+        "applied so far are saved. Run Maintain again to continue."
+        if partial else "Maintenance pass complete.")
     refresh_index(ws, topic)
     after = kg.stats()["overall"]
-    append_log(ws, "lint", "applied", summary=report,
+    append_log(ws, "lint", "partial" if partial else "applied", summary=report,
                metadata={"provider": rp, "model": rm,
                          "entities_before": before["entities"],
                          "entities_after": after["entities"],
                          "topics_after": after["topics"]})
-    return {"ok": True, "report": report, "provider": rp, "model": rm,
-            "before": before, "after": after, "stats": after}
+    return {"ok": True, "report": report, "partial": partial,
+            "provider": rp, "model": rm, "before": before, "after": after,
+            "stats": after}
 
 
 def run_mode(mode: str, *, question: str | None = None, provider=None, model=None,
