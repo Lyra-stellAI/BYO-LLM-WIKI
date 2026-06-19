@@ -170,21 +170,38 @@ def _make_synthesis_judge(provider, model, key="crossdoc_correctness"):
     # Larger budget: gpt-5* spend "reasoning" tokens out of max_completion_tokens.
     judge = build_chat_model(provider, model, max_tokens=2048)
 
+    def _parse(raw):
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not m:
+            return None, ""
+        try:
+            j = json.loads(m.group())
+            return float(j.get("score", 0.0)), j.get("reason", "")
+        except Exception:  # noqa: BLE001
+            return None, ""
+
     def crossdoc_correctness(run, example):
         inp, exp = example.inputs or {}, example.outputs or {}
         sources = "; ".join(f"{t} ({u})" for t, u in
                             zip(exp.get("titles", []), exp.get("expected_urls", [])))
-        raw = rag._gen(judge, _CROSSDOC_JUDGE.format(
+        prompt = _CROSSDOC_JUDGE.format(
             question=inp.get("question", ""), sources=sources,
-            answer=(run.outputs or {}).get("answer", "")))
-        score, reason = 0.0, ""
-        m = re.search(r"\{.*\}", raw, re.DOTALL)
-        if m:
+            answer=(run.outputs or {}).get("answer", ""))
+        # Retry once: some judges (e.g. flaky/throttled endpoints) intermittently
+        # return an empty body or transient 5xx; a single retry recovers most.
+        score, reason = None, ""
+        for attempt in range(2):
             try:
-                j = json.loads(m.group())
-                score = float(j.get("score", 0.0)); reason = j.get("reason", "")
-            except Exception:  # noqa: BLE001
-                pass
+                raw = rag._gen(judge, prompt)
+            except Exception as exc:  # noqa: BLE001
+                reason = f"judge error: {type(exc).__name__}"
+                continue
+            score, reason = _parse(raw)
+            if score is not None:
+                break
+            reason = reason or "unparseable judge response"
+        # score=None -> excluded from this judge's mean (NOT counted as 0.0), so a
+        # flaky judge never unfairly penalizes the answer under test.
         return {"key": key, "score": score, "comment": reason}
 
     crossdoc_correctness.__name__ = key

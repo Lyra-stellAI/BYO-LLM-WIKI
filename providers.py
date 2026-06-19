@@ -55,8 +55,8 @@ PROVIDERS: dict[str, dict] = {
         "env_key": "GEMINI_API_KEY",
         "base_url_env": "GEMINI_BASE_URL",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "default_model": "gemini-2.5-flash",
-        "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
+        "default_model": "gemini-3.5-flash",
+        "models": ["gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.5-flash"],
         "openai_compatible": True,
     },
     "mistral": {
@@ -130,7 +130,7 @@ JUDGE_PANEL_CANDIDATES = [
     ("openai", "gpt-5.2-2025-12-11"),
     ("qwen", "qwen3-max"),
     ("deepseek", "deepseek-chat"),         # DeepSeek V3
-    ("gemini", "gemini-2.5-pro"),
+    ("gemini", "gemini-3.5-flash"),
     ("mistral", "mistral-large-latest"),
 ]
 
