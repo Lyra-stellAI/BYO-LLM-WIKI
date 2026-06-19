@@ -209,7 +209,10 @@ drill into chunks, scoring each chunk by a blend of its own similarity and its
 parent section's similarity. A **re-ranker** over-fetches candidates (≈4×k) and
 has an LLM re-order them listwise for precision — it is **on by default** (RAGAS
 showed +31% context precision; disable with the UI toggle, `--no-rerank`, or
-`"rerank": false`). Optionally enriched with **graph RAG** — 1-hop
+`"rerank": false`). For multi-document questions, **document-aware MMR**
+(`--mmr` / `"mmr": true`) selects the top-k to spread across distinct documents
+(relevance − redundancy, with a same-document penalty), which lifts multi-doc
+retrieval recall. Optionally enriched with **graph RAG** — 1-hop
 knowledge-graph context (entities/topics) for each retrieved chunk. The same
 hierarchy is mirrored into the knowledge graph as `source → section → chunk`.
 

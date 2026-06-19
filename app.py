@@ -440,10 +440,11 @@ def api_rag_search():
     k = int(data.get("k") or 8)
     graph_rag = bool(data.get("graph_rag", True))
     rerank = bool(data.get("rerank", True))
+    mmr = bool(data.get("mmr", False))
     try:
         import rag
-        hits = rag.retrieve(q, k=k, graph_rag=graph_rag, rerank_hits=rerank)
-        return jsonify({"query": q, "reranked": rerank, "hits": hits})
+        hits = rag.retrieve(q, k=k, graph_rag=graph_rag, rerank_hits=rerank, mmr=mmr)
+        return jsonify({"query": q, "reranked": rerank, "mmr": mmr, "hits": hits})
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": str(e)}), 500
 
@@ -459,10 +460,11 @@ def api_rag_ask():
     k = int(data.get("k") or 6)
     graph_rag = bool(data.get("graph_rag", True))
     rerank = bool(data.get("rerank", True))
+    mmr = bool(data.get("mmr", False))
     try:
         import rag
         return jsonify(rag.answer(question, provider=provider, model=model,
-                                  k=k, graph_rag=graph_rag, rerank_hits=rerank))
+                                  k=k, graph_rag=graph_rag, rerank_hits=rerank, mmr=mmr))
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": str(e)}), 500
 
@@ -494,12 +496,13 @@ def api_rag_crossdoc():
     provider = (data.get("provider") or "auto").strip().lower()
     model = (data.get("model") or "").strip()
     rerank = bool(data.get("rerank", True))
+    mmr = bool(data.get("mmr", False))
     k = int(data.get("k") or 8)
     ragas = bool(data.get("ragas", True))
     try:
         import crossdoc
         return jsonify(crossdoc.run_experiment(provider=provider, model=model,
-                                               rerank=rerank, k=k, ragas=ragas))
+                                               rerank=rerank, mmr=mmr, k=k, ragas=ragas))
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": str(e)}), 500
 

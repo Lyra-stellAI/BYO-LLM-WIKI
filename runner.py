@@ -106,6 +106,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "rag-experiment", "rag-dataset", "rag-ragas", "rag-crossdoc"])
     p.add_argument("--rerank", action=argparse.BooleanOptionalAction, default=True,
                    help="Enable the LLM re-ranker for RAG retrieval (default: on; use --no-rerank to disable)")
+    p.add_argument("--mmr", action=argparse.BooleanOptionalAction, default=False,
+                   help="Use document-aware MMR retrieval (diversifies top-k across docs; lifts multi-doc recall)")
     p.add_argument("--export", action="store_true",
                    help="rag-dataset: export LangSmith dataset to the template file (instead of syncing up)")
     p.add_argument("--topic", default="Knowledge", help="Display name for the library")
@@ -223,7 +225,7 @@ def main(argv=None) -> int:
         import rag
         try:
             res = rag.answer(args.question, provider=args.provider, model=args.model,
-                             rerank_hits=args.rerank)
+                             rerank_hits=args.rerank, mmr=args.mmr)
         except rag.RagError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -239,7 +241,7 @@ def main(argv=None) -> int:
         try:
             eval_set = rag.build_eval_set(provider=args.provider, model=args.model)
             report = rag.evaluate(eval_set, provider=args.provider, model=args.model,
-                                  rerank_hits=args.rerank)
+                                  rerank_hits=args.rerank, mmr=args.mmr)
         except rag.RagError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -264,7 +266,7 @@ def main(argv=None) -> int:
         import crossdoc, json as _json
         try:
             res = crossdoc.run_experiment(provider=args.provider, model=args.model,
-                                          rerank=args.rerank)
+                                          rerank=args.rerank, mmr=args.mmr)
         except Exception as exc:  # noqa: BLE001
             print(f"error: {exc}", file=sys.stderr)
             return 1

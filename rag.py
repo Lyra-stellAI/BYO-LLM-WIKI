@@ -103,18 +103,22 @@ def rerank(question: str, hits: list[dict], *, top_k: int,
 @traceable(name="rag.retrieve", tags=["rag", "retrieval", "knowledge-library"])
 def retrieve(question: str, *, k: int = 6, vs_name: str = "library",
              n_sections: int = 6, graph_rag: bool = True, rerank_hits: bool = True,
+             mmr: bool = False, mmr_lambda: float = 0.5,
              provider: str = "auto", model: str | None = None) -> list[dict]:
     vs = VectorStore.load(vs_name)
     if not vs.chunks:
         return []
     q = emb.embed_query(question, model=vs.embed_model)
-    # Over-fetch candidates when re-ranking, then narrow to k.
-    fetch_k = max(k * 4, 20) if rerank_hits else k
-    hits = vs.search(q, k=fetch_k, n_sections=n_sections)
-    if rerank_hits and hits:
-        hits = rerank(question, hits, top_k=k, provider=provider, model=model)
+    if mmr:
+        # Document-aware MMR selects the final k directly (diversity is the goal).
+        hits = vs.search(q, k=k, n_sections=n_sections, mmr=True, mmr_lambda=mmr_lambda)
+    elif rerank_hits:
+        # Over-fetch candidates, then LLM listwise re-rank down to k.
+        hits = vs.search(q, k=max(k * 4, 20), n_sections=n_sections)
+        if hits:
+            hits = rerank(question, hits, top_k=k, provider=provider, model=model)
     else:
-        hits = hits[:k]
+        hits = vs.search(q, k=k, n_sections=n_sections)
     if graph_rag:
         for h in hits:
             h["graph"] = _graph_context_for(h["id"])
@@ -163,13 +167,14 @@ def _answer_from_hits(question: str, hits: list[dict], rp: str, rm: str) -> str:
 
 def answer_with_contexts(question: str, *, provider: str = "auto", model: str | None = None,
                          k: int = 6, vs_name: str = "library", graph_rag: bool = True,
-                         rerank_hits: bool = True) -> dict:
+                         rerank_hits: bool = True, mmr: bool = False,
+                         mmr_lambda: float = 0.5) -> dict:
     """Like answer(), but also returns the full retrieved context texts (for RAGAS)."""
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
         raise RagError("No LLM provider configured.")
     hits = retrieve(question, k=k, vs_name=vs_name, graph_rag=graph_rag,
-                    rerank_hits=rerank_hits, provider=rp, model=rm)
+                    rerank_hits=rerank_hits, mmr=mmr, mmr_lambda=mmr_lambda, provider=rp, model=rm)
     text = (_answer_from_hits(question, hits, rp, rm) if hits
             else "The knowledge library is empty — ingest some pages first.")
     return {"answer": text,
@@ -181,14 +186,14 @@ def answer_with_contexts(question: str, *, provider: str = "auto", model: str | 
 @traceable(name="rag.answer", tags=["rag", "qa", "knowledge-library"])
 def answer(question: str, *, provider: str = "auto", model: str | None = None,
            k: int = 6, vs_name: str = "library", graph_rag: bool = True,
-           rerank_hits: bool = True) -> dict:
+           rerank_hits: bool = True, mmr: bool = False, mmr_lambda: float = 0.5) -> dict:
     if not question or not question.strip():
         raise RagError("A question is required.")
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
         raise RagError("No LLM provider configured. Set an API key to use RAG Q&A.")
     hits = retrieve(question, k=k, vs_name=vs_name, graph_rag=graph_rag,
-                    rerank_hits=rerank_hits, provider=rp, model=rm)
+                    rerank_hits=rerank_hits, mmr=mmr, mmr_lambda=mmr_lambda, provider=rp, model=rm)
     if not hits:
         return {"answer": "The knowledge library is empty — ingest some pages first.",
                 "citations": [], "provider": rp, "model": rm}
@@ -255,7 +260,7 @@ unsupported). Return ONLY JSON: {{"score": <float>, "reason": "<one sentence>"}}
 @traceable(name="rag.evaluate", tags=["rag", "eval", "knowledge-library"])
 def evaluate(eval_set: list[dict], *, provider: str = "auto", model: str | None = None,
              k: int = 6, vs_name: str = "library", graph_rag: bool = True,
-             rerank_hits: bool = True) -> dict:
+             rerank_hits: bool = True, mmr: bool = False, mmr_lambda: float = 0.5) -> dict:
     """Run retrieval + answer for each eval item; score retrieval and answer quality."""
     rp, rm = resolve_provider_model(provider, model)
     judge = build_chat_model(rp, rm, max_tokens=200) if rp else None
@@ -267,7 +272,7 @@ def evaluate(eval_set: list[dict], *, provider: str = "auto", model: str | None 
     for item in eval_set:
         q, exp = item["question"], item["expected_url"]
         hits = retrieve(q, k=k, vs_name=vs_name, graph_rag=graph_rag,
-                        rerank_hits=rerank_hits, provider=rp, model=rm)
+                        rerank_hits=rerank_hits, mmr=mmr, mmr_lambda=mmr_lambda, provider=rp, model=rm)
         urls = [h.get("url") for h in hits]
         hit = exp in urls
         rank = (urls.index(exp) + 1) if hit else 0
@@ -275,7 +280,7 @@ def evaluate(eval_set: list[dict], *, provider: str = "auto", model: str | None 
         rr_sum += (1.0 / rank) if rank else 0.0
 
         ans = answer(q, provider=rp, model=rm, k=k, vs_name=vs_name, graph_rag=graph_rag,
-                     rerank_hits=rerank_hits)
+                     rerank_hits=rerank_hits, mmr=mmr, mmr_lambda=mmr_lambda)
         score, reason = None, ""
         if judge is not None:
             raw = _gen(judge, _JUDGE_PROMPT.format(

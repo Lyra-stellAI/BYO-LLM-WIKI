@@ -189,10 +189,10 @@ def _make_synthesis_judge(provider, model):
     return crossdoc_correctness
 
 
-def _make_target(provider, model, k, rerank, graph_rag):
+def _make_target(provider, model, k, rerank, graph_rag, mmr=False):
     def target(inputs: dict) -> dict:
         res = rag.answer_with_contexts(inputs["question"], provider=provider, model=model,
-                                       k=k, graph_rag=graph_rag, rerank_hits=rerank)
+                                       k=k, graph_rag=graph_rag, rerank_hits=rerank, mmr=mmr)
         return {"answer": res["answer"], "retrieved_contexts": res["contexts"],
                 "retrieved_urls": res["urls"]}
     return target
@@ -200,7 +200,7 @@ def _make_target(provider, model, k, rerank, graph_rag):
 
 def run_experiment(*, provider: str = "auto", model: str | None = None, k: int = 8,
                    rerank: bool = True, graph_rag: bool = True, ragas: bool = True,
-                   n_questions: int = 12, max_concurrency: int = 1) -> dict:
+                   mmr: bool = False, n_questions: int = 12, max_concurrency: int = 1) -> dict:
     from langsmith import evaluate
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
@@ -221,14 +221,14 @@ def run_experiment(*, provider: str = "auto", model: str | None = None, k: int =
             evaluators = ragas_eval.make_ragas_evaluators(rp, rm) + evaluators
         except Exception:  # noqa: BLE001
             pass  # ragas optional
-    tag = "rerank" if rerank else "base"
+    tag = "mmr" if mmr else ("rerank" if rerank else "base")
     results = evaluate(
-        _make_target(rp, rm, k, rerank, graph_rag),
+        _make_target(rp, rm, k, rerank, graph_rag, mmr=mmr),
         data=name,
         evaluators=evaluators,
         experiment_prefix=f"crossdoc-{tag}",
-        metadata={"eval": "crossdoc", "k": k, "rerank": rerank, "ragas": ragas,
-                  "model": f"{rp}/{rm}", "dataset_id": ds["id"]},
+        metadata={"eval": "crossdoc", "k": k, "rerank": rerank, "mmr": mmr,
+                  "ragas": ragas, "model": f"{rp}/{rm}", "dataset_id": ds["id"]},
         client=client,
         max_concurrency=max_concurrency,
         blocking=True,
@@ -242,4 +242,4 @@ def run_experiment(*, provider: str = "auto", model: str | None = None, k: int =
     return {"experiment_name": getattr(results, "experiment_name", None),
             "dataset_id": ds["id"], "dataset_url": dataset_url,
             "metrics": agg.get("means", {}), "n": agg.get("n", 0),
-            "rerank": rerank, "k": k, "provider": rp, "model": rm}
+            "rerank": rerank, "mmr": mmr, "k": k, "provider": rp, "model": rm}

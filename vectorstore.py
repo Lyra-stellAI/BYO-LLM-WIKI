@@ -144,9 +144,16 @@ class VectorStore:
         return self._index
 
     def search(self, query_vec: np.ndarray, k: int = 8, *, n_sections: int = 5,
-               section_weight: float = 0.35, restrict_to_sections: bool = False) -> list[dict]:
+               section_weight: float = 0.35, restrict_to_sections: bool = False,
+               mmr: bool = False, mmr_lambda: float = 0.5, per_doc_penalty: float = 0.4) -> list[dict]:
         """Hierarchical retrieve: rank sections, then blend chunk + parent-section
-        scores. Returns chunk hits enriched with section context and scores."""
+        scores. Returns chunk hits enriched with section context and scores.
+
+        With ``mmr=True`` the top-k is selected by document-aware Maximal Marginal
+        Relevance: each pick maximizes ``mmr_lambda*relevance - (1-mmr_lambda)*
+        redundancy``, where redundancy is the max cosine similarity to already-picked
+        chunks plus ``per_doc_penalty`` if the chunk's document is already
+        represented. This spreads the top-k across documents (lifts multi-doc recall)."""
         if not self.chunks:
             return []
         q = np.asarray(query_vec, dtype=np.float32)
@@ -162,9 +169,10 @@ class VectorStore:
 
         # Fine layer: candidate chunks via HNSW (or numpy), then blend.
         idx = self._ensure_index()
-        cand_idx, cand_sim = idx.top(q, max(k * 6, 30))
+        cand_n = max(k * 8, 48) if mmr else max(k * 6, 30)
+        cand_idx, cand_sim = idx.top(q, cand_n)
         top_set = set(top_section_ids)
-        results = []
+        cands = []  # (row_index, result_dict)
         for j, sim in zip(cand_idx.tolist(), cand_sim.tolist()):
             rec = self.chunks[j]
             sec_id = rec.get("section_id")
@@ -172,7 +180,7 @@ class VectorStore:
             if restrict_to_sections and top_set and sec_id not in top_set:
                 continue
             blended = float(sim) + section_weight * sec_sim
-            results.append({
+            cands.append((j, {
                 "id": rec["id"], "url": rec.get("url"), "title": rec.get("title"),
                 "date": rec.get("date"), "section_id": sec_id,
                 "section_title": rec.get("section_title"),
@@ -181,9 +189,35 @@ class VectorStore:
                 "chunk_score": round(float(sim), 4),
                 "section_score": round(float(sec_sim), 4),
                 "score": round(blended, 4),
-            })
-        results.sort(key=lambda r: -r["score"])
-        return results[:k]
+            }))
+        cands.sort(key=lambda c: -c[1]["score"])
+        if not mmr:
+            return [c[1] for c in cands[:k]]
+        return self._mmr_select(cands, k, mmr_lambda, per_doc_penalty)
+
+    def _mmr_select(self, cands: list, k: int, lam: float, per_doc_penalty: float) -> list[dict]:
+        chosen_js: list[int] = []
+        chosen_urls: set = set()
+        out: list[dict] = []
+        remaining = list(cands)
+        while remaining and len(out) < k:
+            best, best_score, best_pos = None, float("-inf"), -1
+            for pos, (j, rec) in enumerate(remaining):
+                rel = rec["score"]
+                if chosen_js:
+                    red = max(float(self.chunk_emb[j] @ self.chunk_emb[cj]) for cj in chosen_js)
+                else:
+                    red = 0.0
+                if rec.get("url") in chosen_urls:
+                    red += per_doc_penalty
+                score = lam * rel - (1.0 - lam) * red
+                if score > best_score:
+                    best, best_score, best_pos = (j, rec), score, pos
+            j, rec = best
+            rec = dict(rec); rec["mmr_score"] = round(best_score, 4)
+            out.append(rec); chosen_js.append(j); chosen_urls.add(rec.get("url"))
+            remaining.pop(best_pos)
+        return out
 
 
 # --- io helpers --------------------------------------------------------------
