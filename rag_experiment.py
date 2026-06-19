@@ -1,36 +1,94 @@
-"""Wire the RAG evaluation into a LangSmith dataset + experiment.
+"""LangSmith dataset + experiment for the RAG evaluation.
 
-Creates (once) a dataset of (question -> expected source) examples from the
-ingested library, then runs ``langsmith.evaluate`` with the RAG pipeline as the
-target and three evaluators (retrieval hit, reciprocal rank, LLM-judged answer
-correctness). The result is a proper LangSmith *experiment* with per-row scores
-you can compare in the UI — e.g. base vs. re-ranked runs over the same dataset.
+The eval dataset is version-controlled as a reusable template
+(``eval/rag_eval_dataset.json``) and referenced by **dataset ID** (rename-proof).
+``sync_dataset`` pushes the template into LangSmith (idempotent); ``run_experiment``
+resolves the dataset by ID and runs ``langsmith.evaluate`` with the RAG pipeline as
+the target and three evaluators (retrieval_hit, reciprocal_rank, LLM-judged
+answer_correctness), producing a comparable experiment in the LangSmith UI.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+from pathlib import Path
 
+import config
 import rag
 from providers import build_chat_model, resolve_provider_model
 
-_DEFAULT_DATASET = "Trend_analysis RAG eval"
+TEMPLATE_PATH = Path(__file__).parent / "eval" / "rag_eval_dataset.json"
+# Canonical dataset reference is the ID (overridable via env); name is resolved at runtime.
+DEFAULT_DATASET_ID = "5109d873-476c-477a-b465-a0c57ec959f8"
 
 
-def ensure_dataset(client, name: str, eval_set: list[dict]) -> str:
-    """Create the dataset + examples if it does not exist yet (idempotent)."""
-    if client.has_dataset(dataset_name=name):
-        return name
-    client.create_dataset(dataset_name=name,
-                          description="RAG eval: question -> expected source document.")
-    client.create_examples(dataset_name=name, examples=[{
-        "inputs": {"question": item["question"]},
-        "outputs": {"expected_url": item["expected_url"], "title": item.get("title", "")},
-    } for item in eval_set])
-    return name
+def load_template() -> dict:
+    if TEMPLATE_PATH.exists():
+        return json.loads(TEMPLATE_PATH.read_text(encoding="utf-8"))
+    return {}
 
 
+def dataset_id() -> str | None:
+    return os.environ.get("LANGSMITH_RAG_DATASET_ID") or load_template().get("dataset_id") or DEFAULT_DATASET_ID
+
+
+def _client():
+    from langsmith import Client
+    return Client()
+
+
+def sync_dataset(client=None, *, eval_set: list[dict] | None = None) -> dict:
+    """Ensure the dataset exists in LangSmith (by ID, else by name from the
+    template, else freshly created). Idempotent. Returns {id, name, examples}."""
+    client = client or _client()
+    tmpl = load_template()
+    examples = eval_set or [
+        {"inputs": e["inputs"], "outputs": e["outputs"]} for e in tmpl.get("examples", [])]
+    if not examples:
+        raise rag.RagError("No eval examples available (template empty and none generated).")
+
+    # 1) Reference by stored ID when it still resolves.
+    dsid = dataset_id()
+    if dsid:
+        try:
+            ds = client.read_dataset(dataset_id=dsid)
+            return {"id": str(ds.id), "name": ds.name, "examples": ds.example_count or len(examples)}
+        except Exception:  # noqa: BLE001
+            pass  # ID not in this workspace -> create from template below
+
+    # 2) Otherwise create (or reuse by name) and upload the template examples.
+    name = tmpl.get("name") or "RAG eval"
+    if not client.has_dataset(dataset_name=name):
+        client.create_dataset(dataset_name=name,
+                              description=tmpl.get("description", "RAG eval dataset."))
+        client.create_examples(dataset_name=name, examples=[
+            {"inputs": e["inputs"], "outputs": e["outputs"]} for e in examples])
+    ds = client.read_dataset(dataset_name=name)
+    return {"id": str(ds.id), "name": ds.name, "examples": ds.example_count or len(examples)}
+
+
+def export_dataset(dataset_id_value: str | None = None, client=None) -> dict:
+    """Write the committed template from the current LangSmith dataset."""
+    client = client or _client()
+    dsid = dataset_id_value or dataset_id()
+    ds = client.read_dataset(dataset_id=dsid)
+    examples = [{"inputs": ex.inputs, "outputs": ex.outputs}
+                for ex in client.list_examples(dataset_id=dsid)]
+    tmpl = load_template()
+    tmpl.update({
+        "name": ds.name, "dataset_id": str(ds.id),
+        "langsmith_project_id": os.environ.get("LANGSMITH_PROJECT_ID", tmpl.get("langsmith_project_id")),
+        "schema": {"inputs": ["question"], "outputs": ["expected_url", "title"]},
+        "examples": sorted(examples, key=lambda e: e["outputs"].get("expected_url", "")),
+    })
+    TEMPLATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TEMPLATE_PATH.write_text(json.dumps(tmpl, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return {"id": str(ds.id), "name": ds.name, "examples": len(examples), "path": str(TEMPLATE_PATH)}
+
+
+# --- evaluation target + evaluators -----------------------------------------
 def _make_target(provider, model, k, rerank, graph_rag):
     def target(inputs: dict) -> dict:
         res = rag.answer(inputs["question"], provider=provider, model=model, k=k,
@@ -83,64 +141,48 @@ def _aggregate(results) -> dict:
         n += 1
         ev = row.get("evaluation_results", {}) if isinstance(row, dict) else {}
         for r in (ev.get("results", []) or []):
-            key = getattr(r, "key", None)
-            score = getattr(r, "score", None)
+            key, score = getattr(r, "key", None), getattr(r, "score", None)
             if key is not None and score is not None:
                 sums[key] = sums.get(key, 0.0) + float(score)
                 counts[key] = counts.get(key, 0) + 1
     return {"n": n, "means": {k: round(sums[k] / counts[k], 3) for k in sums}}
 
 
-def run_experiment(*, eval_set: list[dict] | None = None, dataset_name: str = _DEFAULT_DATASET,
-                   provider: str = "auto", model: str | None = None, k: int = 6,
+def run_experiment(*, provider: str = "auto", model: str | None = None, k: int = 6,
                    rerank: bool = False, graph_rag: bool = True,
-                   max_questions: int = 15, max_concurrency: int = 2) -> dict:
+                   max_concurrency: int = 2) -> dict:
     try:
-        from langsmith import Client, evaluate
+        from langsmith import evaluate
     except Exception as exc:  # noqa: BLE001
         raise rag.RagError(f"langsmith is required for experiments: {exc}") from exc
 
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
         raise rag.RagError("No LLM provider configured for the experiment.")
+    config.ensure_tracing_project()
 
-    client = Client()
-    if eval_set is None:
-        if client.has_dataset(dataset_name=dataset_name):
-            eval_set = _examples_to_set(client, dataset_name)
-        else:
-            eval_set = rag.build_eval_set(provider=rp, model=rm, max_questions=max_questions)
-    ensure_dataset(client, dataset_name, eval_set)
+    client = _client()
+    ds = sync_dataset(client)  # ensure present; canonical reference is the ID
+    name = client.read_dataset(dataset_id=ds["id"]).name  # evaluate() takes a name
 
     tag = "rerank" if rerank else "base"
     results = evaluate(
         _make_target(rp, rm, k, rerank, graph_rag),
-        data=dataset_name,
+        data=name,
         evaluators=[_retrieval_hit, _reciprocal_rank, _make_answer_judge(rp, rm)],
         experiment_prefix=f"rag-{tag}",
-        metadata={"k": k, "rerank": rerank, "graph_rag": graph_rag, "model": f"{rp}/{rm}"},
+        metadata={"k": k, "rerank": rerank, "graph_rag": graph_rag,
+                  "model": f"{rp}/{rm}", "dataset_id": ds["id"]},
         client=client,
         max_concurrency=max_concurrency,
         blocking=True,
     )
     agg = _aggregate(results)
-    experiment_name = getattr(results, "experiment_name", None)
     dataset_url = None
     try:
-        dataset_url = getattr(client.read_dataset(dataset_name=dataset_name), "url", None)
+        dataset_url = getattr(client.read_dataset(dataset_id=ds["id"]), "url", None)
     except Exception:  # noqa: BLE001
         pass
-    return {"experiment_name": experiment_name, "dataset": dataset_name,
-            "dataset_url": dataset_url, "rerank": rerank, "k": k,
-            "metrics": agg.get("means", {}), "n": agg.get("n", 0)}
-
-
-def _examples_to_set(client, dataset_name: str) -> list[dict]:
-    out = []
-    for ex in client.list_examples(dataset_name=dataset_name):
-        inp, outp = ex.inputs or {}, ex.outputs or {}
-        if inp.get("question"):
-            out.append({"question": inp["question"],
-                        "expected_url": outp.get("expected_url"),
-                        "title": outp.get("title", "")})
-    return out
+    return {"experiment_name": getattr(results, "experiment_name", None),
+            "dataset_id": ds["id"], "dataset_url": dataset_url, "rerank": rerank,
+            "k": k, "metrics": agg.get("means", {}), "n": agg.get("n", 0)}

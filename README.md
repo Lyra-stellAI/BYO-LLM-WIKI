@@ -173,13 +173,17 @@ code changes needed:
 export LANGSMITH_TRACING=true
 export LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 export LANGSMITH_API_KEY=lsv2_...
-export LANGSMITH_PROJECT="Trend_analysis"
+# Reference the project by stable ID; it is resolved to the current name at
+# runtime, so renaming the project in LangSmith does not break tracing.
+export LANGSMITH_PROJECT_ID=b4ad4c7d-...
+# (LANGSMITH_PROJECT="<name>" still works as a fallback.)
 ```
 
 Put them (and your model keys) in a local `.env` — copy `.env.example` to
-`.env` — and both `app.py` and `runner.py` load it on startup. Runs are given
-readable names (`ingest · <topic>`, `query · <question>`, `maintain · <topic>`)
-and tagged `knowledge-library`, so they group cleanly in the project. The
+`.env` — and both `app.py` and `runner.py` load it on startup. `LANGSMITH_PROJECT_ID`
+is resolved to the project's current name (`config.ensure_tracing_project`). Runs
+are given readable names (`ingest · <topic>`, `query · <question>`,
+`maintain · <topic>`) and tagged `knowledge-library`, so they group cleanly. The
 agent-status line in the UI (and `GET /api/agent/status`) shows the active
 tracing project when enabled.
 
@@ -233,12 +237,22 @@ python runner.py --mode rag-experiment --rerank  # re-ranked run on the same dat
 
 ### LangSmith dataset & experiment
 
-`rag-experiment` (and `POST /api/rag/experiment`, `rag_experiment.py`) creates a
-LangSmith **dataset** (`Trend_analysis RAG eval`) of `question → expected source`
-examples, then runs `langsmith.evaluate` with the RAG pipeline as the target and
-three evaluators — **retrieval_hit**, **reciprocal_rank**, and an LLM-judged
-**answer_correctness**. Each run becomes a comparable **experiment** in the
-LangSmith UI, so you can diff base vs. re-ranked over identical inputs.
+The eval dataset is a **reusable, version-controlled template** at
+`eval/rag_eval_dataset.json` (`question → expected source` examples). It is
+referenced by **dataset ID** (rename-proof) via `LANGSMITH_RAG_DATASET_ID`.
+
+```bash
+python runner.py --mode rag-dataset            # sync the template up to LangSmith (idempotent)
+python runner.py --mode rag-dataset --export   # pull the LangSmith dataset back into the template
+```
+
+`rag-experiment` (and `POST /api/rag/experiment`, `rag_experiment.py`) ensures the
+dataset exists (by ID, else created from the template), then runs
+`langsmith.evaluate` with the RAG pipeline as the target and three evaluators —
+**retrieval_hit**, **reciprocal_rank**, and an LLM-judged **answer_correctness**.
+Each run becomes a comparable **experiment** in the LangSmith UI, so you can diff
+base vs. re-ranked over identical inputs. Cloning the repo into a fresh workspace,
+`rag-dataset` recreates the dataset from the template.
 
 ## Endpoints
 
@@ -272,8 +286,10 @@ LangSmith UI, so you can diff base vs. re-ranked over identical inputs.
   → grounded answer with citations.
 - `POST /api/rag/eval` — `{ "max_questions?", "k?", "rerank?", "provider?", "model?" }`
   generates a grounded test set and returns retrieval + answer-quality metrics.
-- `POST /api/rag/experiment` — `{ "rerank?", "k?", "max_questions?", "provider?", "model?" }`
-  creates/refreshes the LangSmith dataset and runs an evaluation experiment.
+- `POST /api/rag/experiment` — `{ "rerank?", "k?", "provider?", "model?" }`
+  ensures the dataset (by ID, from the template) and runs an evaluation experiment.
+- `POST /api/rag/dataset` — sync the committed eval template to LangSmith
+  (`{ "export": true }` writes the template from the LangSmith dataset instead).
 
 `/api/rag/ask` and `/api/rag/search` also accept `"rerank": true`.
 - `DELETE /api/kg/node/<id>?where=current|overall` — remove a node.

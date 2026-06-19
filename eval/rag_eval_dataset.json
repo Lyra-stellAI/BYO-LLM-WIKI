@@ -1,0 +1,152 @@
+{
+  "name": "Trend_analysis RAG eval",
+  "dataset_id": "5109d873-476c-477a-b465-a0c57ec959f8",
+  "langsmith_project_id": "b4ad4c7d-1c1b-426c-9325-68c55f052c73",
+  "description": "Reusable RAG evaluation template: question -> expected source document. Generated from the LangChain blog/resources corpus. Sync to LangSmith with `python runner.py --mode rag-dataset`.",
+  "schema": {
+    "inputs": [
+      "question"
+    ],
+    "outputs": [
+      "expected_url",
+      "title"
+    ]
+  },
+  "examples": [
+    {
+      "inputs": {
+        "question": "What specific method does Better-Harness use to source evals from production traces rather than creating them synthetically?"
+      },
+      "outputs": {
+        "title": "Better Harness: A Recipe for Harness Hill-Climbing with Evals",
+        "expected_url": "https://www.langchain.com/blog/better-harness-a-recipe-for-harness-hill-climbing-with-evals"
+      }
+    },
+    {
+      "inputs": {
+        "question": "What specific cost reduction was achieved for verifiers in the LAB benchmark through the combination of batching, open-source models, and prompt tuning?"
+      },
+      "outputs": {
+        "title": "Designing Efficient Verifiers for Legal Agents",
+        "expected_url": "https://www.langchain.com/blog/designing-efficient-verifiers-for-legal-agents"
+      }
+    },
+    {
+      "inputs": {
+        "question": "What are the three core components that LangChain's create_agent primitive requires to build a custom agent harness?"
+      },
+      "outputs": {
+        "title": "How to Build a Custom Agent Harness",
+        "expected_url": "https://www.langchain.com/blog/how-to-build-a-custom-agent-harness"
+      }
+    },
+    {
+      "inputs": {
+        "question": "What specific example does the document use to illustrate why human judgment is essential for agent reliability?"
+      },
+      "outputs": {
+        "title": "Human judgment in the agent improvement loop",
+        "expected_url": "https://www.langchain.com/blog/human-judgment-in-the-agent-improvement-loop"
+      }
+    },
+    {
+      "inputs": {
+        "question": "What are the two main components that interpreter skills combine to enable agents to execute deterministic workflows?"
+      },
+      "outputs": {
+        "title": "Interpreter Skills: Building Workflows for Agents",
+        "expected_url": "https://www.langchain.com/blog/interpreter-skills"
+      }
+    },
+    {
+      "inputs": {
+        "question": "What is the maximum iteration limit that RubricMiddleware enforces when an agent iteratively improves its outputs against defined success criteria?"
+      },
+      "outputs": {
+        "title": "Introducing Rubrics: Build Agents that Evaluate and Correct Their Work",
+        "expected_url": "https://www.langchain.com/blog/introducing-rubrics-for-deepagents"
+      }
+    },
+    {
+      "inputs": {
+        "question": "What are the four hierarchical loops of loop engineering described in this document, and what is the primary function of the verification loop?"
+      },
+      "outputs": {
+        "title": "The Art of Loop Engineering",
+        "expected_url": "https://www.langchain.com/blog/the-art-of-loop-engineering"
+      }
+    },
+    {
+      "inputs": {
+        "question": "What are the three specific layers of an AI agent that traces can reveal need to be changed according to this document?"
+      },
+      "outputs": {
+        "title": "The Agent Improvement Loop Starts with a Trace",
+        "expected_url": "https://www.langchain.com/blog/traces-start-agent-improvement-loop"
+      }
+    },
+    {
+      "inputs": {
+        "question": "What specific mechanism does the document propose for connecting production traces to actionable improvements in AI agent performance?"
+      },
+      "outputs": {
+        "title": "AI Agent Observability: Tracing, Testing, and Improving Agents",
+        "expected_url": "https://www.langchain.com/resources/agent-observability"
+      }
+    },
+    {
+      "inputs": {
+        "question": "What specific mechanism does the document propose for connecting production traces to human review in order to detect AI system failures that engineering dashboards cannot identify?"
+      },
+      "outputs": {
+        "title": "AI observability requires domain experts, not just dashboards",
+        "expected_url": "https://www.langchain.com/resources/ai-observability"
+      }
+    },
+    {
+      "inputs": {
+        "question": "What is the key distinction made in this document between offline evals and online evals in the context of LLM evaluation?"
+      },
+      "outputs": {
+        "title": "LLM Evals: Production Monitoring to Regression Tests",
+        "expected_url": "https://www.langchain.com/resources/llm-evals"
+      }
+    },
+    {
+      "inputs": {
+        "question": "What specific infrastructure does the document propose as necessary to connect production traces with domain expert feedback for systematic quality improvement in deployed agents?"
+      },
+      "outputs": {
+        "title": "LLM Evaluation Benchmarks: What They Measure & Miss",
+        "expected_url": "https://www.langchain.com/resources/llm-evaluation-benchmarks"
+      }
+    },
+    {
+      "inputs": {
+        "question": "What are the three dimensions of trajectory evaluation that the document identifies for assessing multi-step AI agents?"
+      },
+      "outputs": {
+        "title": "LLM Evaluation Framework: Trajectories vs. Outputs",
+        "expected_url": "https://www.langchain.com/resources/llm-evaluation-framework"
+      }
+    },
+    {
+      "inputs": {
+        "question": "What specific NLP benchmarks does the document identify as insufficient for measuring business-specific quality requirements in LLM evaluation?"
+      },
+      "outputs": {
+        "title": "LLM Evaluation Metrics: Measuring What Matters for Your Users",
+        "expected_url": "https://www.langchain.com/resources/llm-evaluation-metrics"
+      }
+    },
+    {
+      "inputs": {
+        "question": "What specific mechanisms does the document identify for connecting engineering observability with domain expert feedback in LLM applications?"
+      },
+      "outputs": {
+        "title": "Why LLM observability and monitoring need evaluations",
+        "expected_url": "https://www.langchain.com/resources/llm-monitoring-observability"
+      }
+    }
+  ]
+}

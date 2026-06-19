@@ -20,6 +20,8 @@ from providers import (
 
 # Load a local .env (LangSmith + model keys) if present, before reading env.
 config.load_env()
+# Resolve LANGSMITH_PROJECT_ID -> current project name for tracing (best-effort).
+config.ensure_tracing_project()
 
 try:
     from anthropic import Anthropic
@@ -481,6 +483,19 @@ def api_rag_eval():
         report = rag.evaluate(eval_set, provider=provider, model=model,
                               k=k, graph_rag=graph_rag, rerank_hits=rerank)
         return jsonify(report)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rag/dataset", methods=["POST"])
+def api_rag_dataset():
+    """Sync the committed eval template to LangSmith (or ?export=1 to pull it down)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        import rag_experiment
+        if data.get("export"):
+            return jsonify(rag_experiment.export_dataset())
+        return jsonify(rag_experiment.sync_dataset())
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": str(e)}), 500
 

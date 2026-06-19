@@ -25,6 +25,7 @@ from pathlib import Path
 
 import config
 config.load_env()  # pick up LangSmith + model keys from a local .env if present
+config.ensure_tracing_project()  # resolve LANGSMITH_PROJECT_ID -> name for tracing
 
 import agent
 import extraction
@@ -102,8 +103,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Local knowledge library agent (deepagents harness).")
     p.add_argument("--mode", required=True, choices=[
         "init", "ingest", "query", "lint",
-        "rag-ingest", "rag-ask", "rag-eval", "rag-experiment"])
+        "rag-ingest", "rag-ask", "rag-eval", "rag-experiment", "rag-dataset"])
     p.add_argument("--rerank", action="store_true", help="Enable the LLM re-ranker for RAG retrieval")
+    p.add_argument("--export", action="store_true",
+                   help="rag-dataset: export LangSmith dataset to the template file (instead of syncing up)")
     p.add_argument("--topic", default="Knowledge", help="Display name for the library")
     p.add_argument("--workspace", default=None, help="Workspace dir (default: $KG_DATA_DIR/library)")
     p.add_argument("--source", action="append", default=[], help="File or directory to ingest (repeatable)")
@@ -254,6 +257,21 @@ def main(argv=None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         print(_json.dumps(res, indent=2))
+        return 0
+
+    if args.mode == "rag-dataset":
+        import rag_experiment
+        try:
+            if args.export:
+                res = rag_experiment.export_dataset()
+                print(f"Exported dataset to {res['path']}: {res['examples']} examples (id {res['id']})")
+            else:
+                res = rag_experiment.sync_dataset()
+                print(f"Synced dataset to LangSmith: '{res['name']}' "
+                      f"id={res['id']} ({res['examples']} examples)")
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         return 0
 
     return 2
