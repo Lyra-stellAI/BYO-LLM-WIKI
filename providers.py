@@ -50,6 +50,24 @@ PROVIDERS: dict[str, dict] = {
         "models": ["deepseek-chat", "deepseek-reasoner"],
         "openai_compatible": True,
     },
+    "gemini": {
+        "label": "Google (Gemini)",
+        "env_key": "GEMINI_API_KEY",
+        "base_url_env": "GEMINI_BASE_URL",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "default_model": "gemini-2.5-flash",
+        "models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
+        "openai_compatible": True,
+    },
+    "mistral": {
+        "label": "Mistral",
+        "env_key": "MISTRAL_API_KEY",
+        "base_url_env": "MISTRAL_BASE_URL",
+        "base_url": "https://api.mistral.ai/v1",
+        "default_model": "mistral-large-latest",
+        "models": ["mistral-large-latest", "mistral-small-latest"],
+        "openai_compatible": True,
+    },
 }
 
 
@@ -78,7 +96,7 @@ def resolve_provider_model(provider: str | None, model: str | None) -> tuple[str
 
 # Each provider here is a distinct model family; an LLM judge should not share the
 # generator's family (self-preference bias). Preference order for picking a judge.
-_JUDGE_PREFERENCE = ("openai", "anthropic", "qwen", "deepseek")
+_JUDGE_PREFERENCE = ("openai", "anthropic", "qwen", "deepseek", "gemini", "mistral")
 
 
 def default_judge_model(gen_provider: str | None) -> tuple[str | None, str]:
@@ -107,26 +125,29 @@ def resolve_judge(gen_provider: str, gen_model: str, judge_provider: str | None 
     return gen_provider, gen_model, False
 
 
-# LLM-as-judge PANEL: diverse, capable models spanning families. (gpt-5.3 is not
-# released; gpt-5.1 is the latest GPT-5.x. qwen3-max is the strong Qwen3 judge.)
+# LLM-as-judge PANEL: one capable model per FAMILY for maximum judge diversity.
 JUDGE_PANEL_CANDIDATES = [
-    ("openai", "gpt-5-mini"),
-    ("openai", "gpt-5.1"),
-    ("qwen", "qwen-plus-latest"),
+    ("openai", "gpt-5.2-2025-12-11"),
     ("qwen", "qwen3-max"),
-    ("deepseek", "deepseek-chat"),
+    ("deepseek", "deepseek-chat"),         # DeepSeek V3
+    ("gemini", "gemini-2.5-pro"),
+    ("mistral", "mistral-large-latest"),
 ]
 
 
 def judge_panel(gen_provider: str | None, *, max_judges: int = 6) -> list[tuple[str, str]]:
-    """Build a panel of configured judges from DIFFERENT families than the generator.
+    """Build a panel of configured judges, one per FAMILY, excluding the generator's.
 
-    A multi-judge panel (diverse families/models) averages out any single model's
-    idiosyncratic strictness/bias. Excludes the generator's own family.
+    A diverse cross-family panel averages out any single model's idiosyncratic
+    strictness/bias. Only configured providers (API key set) are included, so
+    Gemini/Mistral join automatically once their keys are present.
     """
     gen_provider = (gen_provider or "").lower()
-    panel = [(p, m) for p, m in JUDGE_PANEL_CANDIDATES
-             if p != gen_provider and provider_configured(p)]
+    panel, seen = [], set()
+    for p, m in JUDGE_PANEL_CANDIDATES:
+        if p != gen_provider and p not in seen and provider_configured(p):
+            panel.append((p, m))
+            seen.add(p)
     return panel[:max_judges]
 
 
