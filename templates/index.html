@@ -407,6 +407,12 @@
         </div>
         <div class="ingest-actions">
           <button id="skillBuildBtn" class="btn btn-accent">Build skill →</button>
+          <label class="rag-toggle" style="margin-left:10px">generator
+            <select id="skillBackend" style="margin-left:4px">
+              <option value="pipeline">in-process pipeline</option>
+              <option value="claude_code">Claude Code (subprocess)</option>
+            </select>
+          </label>
           <label class="rag-toggle" style="margin-left:10px"><input type="checkbox" id="skillTools" checked /> use tools</label>
           <label class="rag-toggle" style="margin-left:10px"><input type="checkbox" id="skillRubric" checked /> rubric panel</label>
           <div id="skillBuildProg" class="ingest-progress"></div>

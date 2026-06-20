@@ -121,7 +121,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "memory-list", "memory-recall", "memory-add", "memory-forget",
         "skill-build", "skill-list", "skill-show", "skill-eval", "skill-pending",
         "skill-review", "skill-rebuild", "skill-refine", "skill-export", "skill-forget",
-        "skill-runs", "skill-observability"])
+        "skill-runs", "skill-observability", "skill-backends"])
     p.add_argument("--overwrite", action="store_true",
                    help="rag-crossdoc-labels: redraft key_points for already-labeled questions too")
     p.add_argument("--rerank", action=argparse.BooleanOptionalAction, default=True,
@@ -160,6 +160,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="skill-build/eval: run the LLM rubric panel (default: on; --no-rubric for deterministic-only)")
     p.add_argument("--tools", action=argparse.BooleanOptionalAction, default=True,
                    help="skill-build/refine: let the author use tools to check+refine its draft (default: on)")
+    p.add_argument("--backend", default=None, choices=["pipeline", "claude_code"],
+                   help="skill-build/refine generator: in-process pipeline or the Claude Code subprocess agent")
     return p
 
 
@@ -423,14 +425,14 @@ def main(argv=None) -> int:
             res = skill_agent.build_skill(
                 query=args.query, text=args.text, tags=tags, goal=args.goal or "",
                 provider=args.provider, model=args.model, run_rubric=args.rubric,
-                use_tools=args.tools)
+                use_tools=args.tools, backend=args.backend)
         except skill_agent.SkillError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         s, ev = res["skill"], res["eval"]
         obs = res.get("observability", {})
         print(f"Drafted skill '{s['name']}' ({s['id']})  →  gate={res['gate']}  status={s['status']}")
-        print(f"  author: {res['provider']}/{res['model']}"
+        print(f"  backend: {res.get('backend')}  ·  author: {res['provider']}/{res['model']}"
               f"{' +tools (%d calls)' % obs.get('tools_used', 0) if obs.get('tool_mode') else ''}"
               f"  ·  {obs.get('duration_ms', '?')} ms  ·  {obs.get('tokens', '?')} tokens")
         det = ev["deterministic"]
@@ -539,7 +541,7 @@ def main(argv=None) -> int:
         try:
             res = skill_agent.refine_skill(args.skill_id, provider=args.provider,
                                            model=args.model, use_tools=args.tools,
-                                           run_rubric=args.rubric)
+                                           run_rubric=args.rubric, backend=args.backend)
         except skill_agent.SkillError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -562,6 +564,18 @@ def main(argv=None) -> int:
     if args.mode == "skill-observability":
         import skill_runs, json as _json
         print(_json.dumps(skill_runs.benchmark(skill_id=args.skill_id), indent=2))
+        return 0
+
+    if args.mode == "skill-backends":
+        import skill_agent, skill_claude_agent, json as _json
+        cc = skill_claude_agent.status()
+        print(f"default backend: {skill_agent.DEFAULT_BACKEND}")
+        print(f"  pipeline     : in-process LLM phases")
+        print(f"  claude_code  : {'available' if cc['available'] else 'NOT FOUND'} "
+              f"(bin={cc['bin']}, model={cc['model']}, sdk={'yes' if cc['sdk_installed'] else 'no'})")
+        if not cc["available"]:
+            print("  → install the Claude Code CLI (npm i -g @anthropic-ai/claude-code) and authenticate it,")
+            print("    or set CLAUDE_CODE_BIN, to use --backend claude_code.")
         return 0
 
     if args.mode == "skill-export":

@@ -26,6 +26,7 @@ the shared provider table so a single key lights them up.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 
@@ -42,6 +43,15 @@ except Exception:  # noqa: BLE001  (memory is optional; never block a build)
 
 MAX_CONTEXT_CHARS = 12000
 DIGEST_CHARS = 1800
+
+# Which generator authors the skill: "pipeline" (in-process LLM phases) or
+# "claude_code" (the Claude Code CLI as a tool-using subprocess agent).
+DEFAULT_BACKEND = os.environ.get("SKILL_BACKEND", "pipeline").strip().lower()
+
+
+def _resolve_backend(backend: str | None) -> str:
+    b = (backend or DEFAULT_BACKEND or "pipeline").strip().lower()
+    return b if b in ("pipeline", "claude_code") else "pipeline"
 
 
 class SkillError(RuntimeError):
@@ -383,11 +393,110 @@ def _timed(fn):
     return out, int((time.perf_counter() - t0) * 1000)
 
 
+def _eval_record_return(skill_id: str, *, rp: str, rm: str, provider_label: str,
+                        understanding, spec, artifact, phases: dict, wall0: float,
+                        gen_tokens: int, tools_used: int, kind: str, backend: str,
+                        run_rubric: bool, run_triggering: bool, judge_provider, judge_model,
+                        extra_obs: dict | None = None) -> dict:
+    """Shared tail of every build path: eval → gate → record → observability."""
+    skill = skills.get_skill(skill_id)
+    report, eval_ms = _timed(lambda: skill_eval.run_eval(
+        skill, provider=rp, model=rm, run_rubric=run_rubric, run_triggering=run_triggering,
+        judge_provider=judge_provider, judge_model=judge_model))
+    phases["eval"] = {"ms": eval_ms}
+    skill = skills.record_eval(skill_id, report)
+
+    duration_ms = int((time.perf_counter() - wall0) * 1000)
+    trig = report.get("triggering") or {}
+    metrics = {
+        "deterministic_ratio": report["deterministic"]["ratio"],
+        "rubric_mean": report.get("rubric_mean"),
+        "trigger_precision": trig.get("precision"),
+        "trigger_recall": trig.get("recall"),
+        "trigger_f1": trig.get("f1"),
+    }
+    skill_runs.record(kind=kind, skill_id=skill_id, skill_name=skill["name"],
+                      provider=provider_label, model=rm, gate=report["gate"], status=skill["status"],
+                      duration_ms=duration_ms, tokens=gen_tokens, tools_used=tools_used,
+                      phases=phases, metrics=metrics)
+    _remember_safe(
+        f"{'Refined' if kind == 'refine' else 'Built'} agent skill '{skill['name']}' "
+        f"via {backend}; eval gate = {report['gate']}.",
+        kind="observation", salience=2, origin="skill_agent",
+        confidence="EXTRACTED", tags=["skill", kind])
+
+    obs = {"duration_ms": duration_ms, "tokens": gen_tokens, "tools_used": tools_used,
+           "backend": backend, "timings": phases}
+    if extra_obs:
+        obs.update(extra_obs)
+    return {
+        "ok": True, "skill": skill, "skill_id": skill_id, "status": skill["status"],
+        "gate": report["gate"], "backend": backend,
+        "phases": {"understand": understanding, "analyze": spec, "codeact": artifact},
+        "observability": obs, "eval": report, "provider": provider_label, "model": rm,
+    }
+
+
+def _build_with_claude_code(bundle: dict, *, model, goal: str = "", revision_note: str = "",
+                            where_id: str | None = None, run_rubric: bool = True,
+                            run_triggering: bool = True, use_tools: bool = True,
+                            kind: str = "build", judge_provider=None, judge_model=None) -> dict:
+    """Generate the skill via the Claude Code CLI subprocess, then run the SAME
+    evaluation → gate as the in-process backend (the eval step is backend-agnostic)."""
+    import skill_claude_agent
+    wall0 = time.perf_counter()
+    try:
+        res, ms = _timed(lambda: skill_claude_agent.generate(
+            bundle, goal=goal, revision_note=revision_note, model=model, allow_tools=use_tools))
+    except skill_claude_agent.ClaudeAgentError as exc:
+        skill_runs.record(kind=kind, ok=False, provider="claude_code", model=model or "",
+                          error=str(exc)[:300])
+        raise SkillError(str(exc)) from exc
+
+    meta = res["meta"]
+    artifact = _normalize_artifact(res["artifact"], {})
+    if not (artifact.get("instructions") and artifact.get("name")):
+        skill_runs.record(kind=kind, ok=False, provider="claude_code", model=meta.get("model", ""),
+                          error="claude code returned no usable skill")
+        raise SkillError("Claude Code did not produce a usable skill (empty instructions/name).")
+
+    artifact["provenance"] = bundle["provenance"]
+    if revision_note:
+        artifact["revision_note"] = revision_note
+    skill = skills.upsert_skill(artifact, where_id=where_id)
+    if not skill:
+        raise SkillError("Could not store the Claude-Code-drafted skill.")
+    skill_id = skill["id"]
+    skills.append_history(skill_id, kind, "drafted",
+                          note=f"claude_code/{meta.get('model', '')} (agent, {meta.get('num_turns')} turns)")
+    skills.export_skill(skill_id)  # refresh SKILL.md from the stored skill
+
+    # Eval judges run in-process (auto provider). If no in-process key is set, the
+    # rubric/triggering gracefully skip and the gate falls back to deterministic-only.
+    jrp, jrm = ("auto", None)
+    phases = {"codeact": {"ms": ms, "tokens": meta.get("tokens"),
+                          "tool_calls": meta.get("num_turns"), "backend": "claude_code"}}
+    return _eval_record_return(
+        skill_id, rp=jrp, rm=meta.get("model", ""), provider_label="claude_code",
+        understanding={"summary": meta.get("understanding")},
+        spec={"rationale": meta.get("analysis")}, artifact=artifact, phases=phases,
+        wall0=wall0, gen_tokens=meta.get("tokens") or 0, tools_used=meta.get("num_turns") or 0,
+        kind=kind, backend="claude_code", run_rubric=run_rubric, run_triggering=run_triggering,
+        judge_provider=judge_provider, judge_model=judge_model,
+        extra_obs={"cost_usd": meta.get("cost_usd"), "session_id": meta.get("session_id"),
+                   "skill_md": meta.get("skill_md"), "tool_mode": True})
+
+
 def _build_from_bundle(bundle: dict, *, provider, model, goal: str = "",
                        revision_note: str = "", where_id: str | None = None,
                        run_rubric: bool = True, run_triggering: bool = True,
-                       use_tools: bool = True, kind: str = "build",
+                       use_tools: bool = True, kind: str = "build", backend: str = "pipeline",
                        judge_provider=None, judge_model=None) -> dict:
+    if _resolve_backend(backend) == "claude_code":
+        return _build_with_claude_code(
+            bundle, model=model, goal=goal, revision_note=revision_note, where_id=where_id,
+            run_rubric=run_rubric, run_triggering=run_triggering, use_tools=use_tools,
+            kind=kind, judge_provider=judge_provider, judge_model=judge_model)
     chat, rp, rm = _resolve_model(provider, model)
     wall0 = time.perf_counter()
     phases: dict = {}
@@ -438,72 +547,38 @@ def _build_from_bundle(bundle: dict, *, provider, model, goal: str = "",
     # portable artifact exists from the draft, not only after acceptance.
     skills.export_skill(skill_id)
 
-    # eval → gate → record (advances status to pending_review or rejected)
-    report, eval_ms = _timed(lambda: skill_eval.run_eval(
-        skill, provider=rp, model=rm, run_rubric=run_rubric, run_triggering=run_triggering,
-        judge_provider=judge_provider, judge_model=judge_model))
-    phases["eval"] = {"ms": eval_ms}
-    skill = skills.record_eval(skill_id, report)
-
-    duration_ms = int((time.perf_counter() - wall0) * 1000)
-    total_tokens = mu.tokens + ma.tokens + mc.tokens
-    trig = report.get("triggering") or {}
-    metrics = {
-        "deterministic_ratio": report["deterministic"]["ratio"],
-        "rubric_mean": report.get("rubric_mean"),
-        "trigger_precision": trig.get("precision"),
-        "trigger_recall": trig.get("recall"),
-        "trigger_f1": trig.get("f1"),
-    }
-    # Observability: log this build as a measured run (the 'measure' of the loop).
-    skill_runs.record(kind=kind, skill_id=skill_id, skill_name=skill["name"],
-                      provider=rp, model=rm, gate=report["gate"], status=skill["status"],
-                      duration_ms=duration_ms, tokens=total_tokens, tools_used=tools_used,
-                      phases=phases, metrics=metrics)
-
-    # Memory partnership (Hermes step 4-6): record the experience as a durable note.
-    _remember_safe(
-        f"{'Refined' if kind == 'refine' else 'Built'} agent skill '{artifact['name']}' from "
-        f"{len(bundle['provenance'].get('chunk_ids', []))} context chunk(s); eval gate = {report['gate']}.",
-        kind="observation", salience=2, origin="skill_agent",
-        confidence="EXTRACTED", tags=["skill", kind])
-
-    return {
-        "ok": True,
-        "skill": skill,
-        "skill_id": skill_id,
-        "status": skill["status"],
-        "gate": report["gate"],
-        "phases": {"understand": understanding, "analyze": spec, "codeact": artifact},
-        "observability": {"duration_ms": duration_ms, "tokens": total_tokens,
-                          "tools_used": tools_used, "tool_mode": tool_mode, "timings": phases},
-        "eval": report,
-        "provider": rp,
-        "model": rm,
-    }
+    # eval → gate → record → observability (shared with the claude_code backend).
+    return _eval_record_return(
+        skill_id, rp=rp, rm=rm, provider_label=rp, understanding=understanding, spec=spec,
+        artifact=artifact, phases=phases, wall0=wall0,
+        gen_tokens=mu.tokens + ma.tokens + mc.tokens, tools_used=tools_used, kind=kind,
+        backend="pipeline", run_rubric=run_rubric, run_triggering=run_triggering,
+        judge_provider=judge_provider, judge_model=judge_model,
+        extra_obs={"tool_mode": tool_mode})
 
 
 def build_skill(*, chunk_ids=None, text=None, query=None, tags=None, where="overall",
                 goal: str = "", provider="auto", model=None, run_rubric: bool = True,
-                run_triggering: bool = True, use_tools: bool = True,
+                run_triggering: bool = True, use_tools: bool = True, backend: str | None = None,
                 judge_provider=None, judge_model=None) -> dict:
     """Run the full pipeline: gather → understand → analyze → codeact → eval → gate.
 
-    With ``use_tools`` (default) the author may read context, recall memory, and
-    check its own draft before finalizing (test → measure → refine). The skill is
-    drafted, evaluated, gated, and its SKILL.md written; on a passing gate it lands
-    in ``pending_review`` for human alignment (it is NOT auto-accepted). Returns
-    every phase's output, the eval report, and an observability summary."""
+    ``backend`` selects the generator: ``pipeline`` (in-process LLM phases, default)
+    or ``claude_code`` (the Claude Code CLI as a tool-using subprocess agent). Either
+    way the skill is drafted, evaluated, gated, and its SKILL.md written; on a passing
+    gate it lands in ``pending_review`` for human alignment (never auto-accepted).
+    Returns every phase's output, the eval report, and an observability summary."""
     bundle = gather_context(chunk_ids=chunk_ids, text=text, query=query, tags=tags, where=where)
     return _build_from_bundle(bundle, provider=provider, model=model, goal=goal,
                               run_rubric=run_rubric, run_triggering=run_triggering,
-                              use_tools=use_tools, judge_provider=judge_provider,
+                              use_tools=use_tools, backend=backend, judge_provider=judge_provider,
                               judge_model=judge_model)
 
 
 def rebuild_skill(skill_id: str, *, provider="auto", model=None, extra_guidance: str = "",
                   run_rubric: bool = True, run_triggering: bool = True, use_tools: bool = True,
-                  judge_provider=None, judge_model=None, kind: str = "build") -> dict:
+                  backend: str | None = None, judge_provider=None, judge_model=None,
+                  kind: str = "build") -> dict:
     """Re-run the pipeline for an existing skill, folding the human's revision notes
     (and any ``extra_guidance``) into a fresh ``codeact`` pass — the loop closer.
 
@@ -520,7 +595,7 @@ def rebuild_skill(skill_id: str, *, provider="auto", model=None, extra_guidance:
     return _build_from_bundle(bundle, provider=provider, model=model,
                               revision_note=note, where_id=skill["id"],
                               run_rubric=run_rubric, run_triggering=run_triggering,
-                              use_tools=use_tools, judge_provider=judge_provider,
+                              use_tools=use_tools, backend=backend, judge_provider=judge_provider,
                               judge_model=judge_model, kind=kind)
 
 
@@ -547,7 +622,7 @@ def _refine_guidance(skill: dict) -> str:
 
 
 def refine_skill(skill_id: str, *, provider="auto", model=None, run_rubric: bool = True,
-                 run_triggering: bool = True, use_tools: bool = True) -> dict:
+                 run_triggering: bool = True, use_tools: bool = True, backend: str | None = None) -> dict:
     """Self-improvement pass: read the skill's measured weaknesses (failed checks,
     triggering precision/recall, weakest rubric dimension) and rebuild it to address
     them — the test → measure → refine loop, logged as a ``refine`` run."""
@@ -557,7 +632,7 @@ def refine_skill(skill_id: str, *, provider="auto", model=None, run_rubric: bool
     guidance = _refine_guidance(skill)
     return rebuild_skill(skill_id, provider=provider, model=model, extra_guidance=guidance,
                          run_rubric=run_rubric, run_triggering=run_triggering,
-                         use_tools=use_tools, kind="refine")
+                         use_tools=use_tools, backend=backend, kind="refine")
 
 
 # --- human-in-the-loop alignment --------------------------------------------

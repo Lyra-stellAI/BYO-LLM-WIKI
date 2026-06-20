@@ -325,6 +325,79 @@ def test_refine_guidance_from_eval():
     assert "has_anti_triggers" in g and "false positives" in g and "style" in g
 
 
+# --- Claude Code subprocess backend ------------------------------------------
+def test_claude_code_command_and_parsing():
+    import skill_claude_agent as cc
+    cmd = cc.build_command("claude-opus-4-8", allow_tools=True)
+    assert cmd[0] == cc.CLAUDE_BIN and "-p" in cmd
+    assert "--output-format" in cmd and "json" in cmd
+    assert "--model" in cmd and "claude-opus-4-8" in cmd
+    assert cc.ALLOWED_TOOLS_FLAG in cmd and "--permission-mode" in cmd
+    # allow_tools=False drops the tool/permission flags
+    assert cc.ALLOWED_TOOLS_FLAG not in cc.build_command("m", allow_tools=False)
+    env = cc.parse_envelope(json.dumps({"type": "result", "result": "hi",
+        "usage": {"input_tokens": 10, "output_tokens": 5}, "total_cost_usd": 0.01, "num_turns": 2}))
+    assert env["result"] == "hi" and env["tokens"] == 15 and env["num_turns"] == 2
+    assert cc.extract_skill("```json\n{\"name\": \"X\"}\n```") == {"name": "X"}
+
+
+def test_claude_code_generate_with_injected_runner():
+    import skill_claude_agent as cc
+    from pathlib import Path
+
+    def fake_runner(cmd, prompt, workspace, timeout):
+        Path(workspace, "skill.json").write_text(json.dumps(_good_skill_spec()), encoding="utf-8")
+        Path(workspace, "SKILL.md").write_text("# Draft Release Notes\n", encoding="utf-8")
+        env = {"type": "result", "is_error": False, "result": "done",
+               "usage": {"input_tokens": 100, "output_tokens": 200},
+               "total_cost_usd": 0.02, "num_turns": 4}
+        return {"returncode": 0, "stdout": json.dumps(env), "stderr": ""}
+
+    bundle = {"context": "changelog v2.0 added X, fixed Y",
+              "provenance": {"chunk_ids": ["c1"], "source_titles": ["Changelog"]}}
+    out = cc.generate(bundle, _runner=fake_runner)
+    assert out["artifact"]["name"] == "Draft Release Notes"     # recovered from skill.json
+    assert out["meta"]["num_turns"] == 4 and out["meta"]["tokens"] == 300
+    assert out["meta"]["skill_md"].startswith("# Draft Release Notes")
+
+
+def test_claude_code_backend_build_runs_eval():
+    import skill_claude_agent as cc
+    saved = cc.generate
+    cc.generate = lambda bundle, **kw: {
+        "artifact": _good_skill_spec(),
+        "meta": {"backend": "claude_code", "model": "claude-opus-4-8", "tokens": 1234,
+                 "num_turns": 3, "cost_usd": 0.01, "understanding": "u", "analysis": "a",
+                 "skill_md": "# md"},
+        "workspace": "/tmp/x"}
+    try:
+        # run_rubric off so no LLM judge is needed -> deterministic-only gate = review
+        res = skill_agent.build_skill(text="context about changelogs and releases",
+                                      backend="claude_code", run_rubric=False, run_triggering=False)
+    finally:
+        cc.generate = saved
+    assert res["backend"] == "claude_code"
+    assert res["skill"]["status"] == sk.PENDING_REVIEW   # eval ran; deterministic clean -> review
+    assert res["observability"]["tokens"] == 1234 and res["observability"]["tools_used"] == 3
+    runs = skill_runs.list_runs(kind="build")
+    assert runs and runs[0]["provider"] == "claude_code"
+
+
+def test_claude_code_unavailable_raises_clean_error():
+    import skill_claude_agent as cc
+    saved = cc.cli_available
+    cc.cli_available = lambda: False
+    try:
+        try:
+            skill_agent.build_skill(text="x" * 80, backend="claude_code")
+        except skill_agent.SkillError as e:
+            assert "Claude Code CLI" in str(e)
+            return
+        raise AssertionError("expected SkillError when the CLI is unavailable")
+    finally:
+        cc.cli_available = saved
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]

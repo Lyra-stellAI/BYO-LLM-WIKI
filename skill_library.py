@@ -348,11 +348,12 @@ def record_eval(skill_id: str, report: dict) -> dict | None:
         gate = (report or {}).get("gate", "review")
         s["status"] = REJECTED if gate == "reject" else PENDING_REVIEW
         s["updated_at"] = _now()
+        det = report.get("deterministic") or {}
+        rub = report.get("rubric") or {}
         s.setdefault("history", []).append({
             "at": _now(), "phase": "eval", "outcome": gate,
-            "note": f"deterministic {report.get('deterministic', {}).get('passed', '?')}/"
-                    f"{report.get('deterministic', {}).get('total', '?')} · "
-                    f"rubric {report.get('rubric', {}).get('mean', '?')}"})
+            "note": f"deterministic {det.get('passed', '?')}/{det.get('total', '?')} · "
+                    f"rubric {rub.get('mean', '?')}"})
         _save(data)
         return _public(s)
 

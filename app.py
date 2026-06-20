@@ -563,6 +563,22 @@ def api_skill_observability():
                     "recent": skill_runs.list_runs(skill_id=skill_id, limit=20)})
 
 
+@app.route("/api/skill/backends")
+def api_skill_backends():
+    """Which skill-generation backends are available: the in-process pipeline and
+    the Claude Code CLI subprocess agent."""
+    import skill_agent, skill_claude_agent
+    return jsonify({
+        "default": skill_agent.DEFAULT_BACKEND,
+        "backends": {
+            "pipeline": {"name": "pipeline", "available": bool(first_available_provider()),
+                         "label": "In-process pipeline (LLM phases)"},
+            "claude_code": {**skill_claude_agent.status(),
+                            "label": "Claude Code CLI (tool-using subprocess agent)"},
+        },
+    })
+
+
 @app.route("/api/skill/runs")
 def api_skill_runs():
     """Raw observability runs (build / eval / refine / review) with per-run metrics."""
@@ -609,6 +625,7 @@ def api_skill_build():
             run_rubric=bool(data.get("run_rubric", True)),
             run_triggering=bool(data.get("run_triggering", True)),
             use_tools=bool(data.get("use_tools", True)),
+            backend=(data.get("backend") or "").strip().lower() or None,
             judge_provider=(data.get("judge_provider") or "").strip().lower() or None,
             judge_model=(data.get("judge_model") or "").strip() or None)
         res["stats"] = skills.stats()
@@ -701,6 +718,7 @@ def api_skill_refine(skill_id):
             skill_id, provider=(data.get("provider") or "auto").strip().lower(),
             model=(data.get("model") or "").strip() or None,
             use_tools=bool(data.get("use_tools", True)),
+            backend=(data.get("backend") or "").strip().lower() or None,
             run_rubric=bool(data.get("run_rubric", True)),
             run_triggering=bool(data.get("run_triggering", True)))
         res["stats"] = skills.stats()

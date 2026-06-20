@@ -58,6 +58,22 @@
       (trig && trig.f1 != null ? `<span class="kg-tag">trigger F1 ${esc(String(trig.f1))}</span>` : "");
   }
 
+  async function loadBackends() {
+    try {
+      const data = await fetch("/api/skill/backends").then((r) => r.json());
+      const sel = $("#skillBackend");
+      const cc = (data.backends || {}).claude_code || {};
+      const opt = sel.querySelector('option[value="claude_code"]');
+      if (opt) {
+        opt.disabled = !cc.available;
+        opt.textContent = cc.available
+          ? "Claude Code (subprocess)"
+          : "Claude Code (CLI not found)";
+      }
+      sel.value = (data.default === "claude_code" && cc.available) ? "claude_code" : "pipeline";
+    } catch (e) { /* ignore */ }
+  }
+
   async function loadObservability() {
     try {
       const b = (await fetch("/api/skill/observability").then((r) => r.json())).benchmark || {};
@@ -153,10 +169,13 @@
     buildOut.classList.remove("hidden");
     buildOut.innerHTML = `
       <h4>Built “${esc(s.name)}” ${statusBadge(s.status)} ${gateBadge(res.gate)}</h4>
-      <div class="cite"><strong>Author.</strong> ${esc(res.provider || "")}/${esc(res.model || "")}
+      <div class="cite"><strong>Author.</strong>
+        <span class="kg-tag">${esc(res.backend || "pipeline")}</span>
+        ${esc(res.provider || "")}/${esc(res.model || "")}
         ${obs.tool_mode ? `<span class="kg-tag">tools ×${esc(String(obs.tools_used || 0))}</span>` : ""}
         <span class="kg-tag">${esc(String(obs.duration_ms ?? "?"))} ms</span>
-        <span class="kg-tag">${esc(String(obs.tokens ?? "?"))} tokens</span></div>
+        <span class="kg-tag">${esc(String(obs.tokens ?? "?"))} tokens</span>
+        ${obs.cost_usd != null ? `<span class="kg-tag">$${esc(String(obs.cost_usd))}</span>` : ""}</div>
       <div class="cite"><strong>Description.</strong> ${esc(s.description || "")}</div>
       <div class="cite"><strong>Eval.</strong> deterministic ${esc(String(det.passed))}/${esc(String(det.total))}
         · rubric mean ${esc(String(ev.rubric_mean ?? "—"))} <span style="color:var(--muted)">(${dimLine})</span>
@@ -192,6 +211,7 @@
         goal: $("#skillGoal").value.trim() || undefined,
         run_rubric: $("#skillRubric").checked,
         use_tools: $("#skillTools").checked,
+        backend: $("#skillBackend").value || undefined,
       });
       buildProg.className = "ingest-progress ok";
       buildProg.textContent = `Drafted and evaluated (gate: ${res.gate}).`;
@@ -277,6 +297,7 @@
   document.querySelectorAll('.tab[data-tab="skill"]').forEach((t) =>
     t.addEventListener("click", loadList));
 
+  loadBackends();
   loadStats();
   loadList();
 })();

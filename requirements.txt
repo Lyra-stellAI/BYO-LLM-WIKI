@@ -21,3 +21,9 @@ hnswlib>=0.8.0
 # Optional: RAGAS evaluation (rag-ragas / POST /api/rag/ragas). Heavy deps; only
 # needed to run RAGAS faithfulness/answer-relevancy/context-precision metrics.
 # ragas>=0.4.0
+
+# Optional: the `claude_code` skill-generation backend (SKILL_BACKEND=claude_code)
+# invokes the Claude Code CLI as a subprocess — install it separately and
+# authenticate it:  npm i -g @anthropic-ai/claude-code
+# The Python Agent SDK is detected if present (informational only):
+# claude-agent-sdk>=0.1.0
