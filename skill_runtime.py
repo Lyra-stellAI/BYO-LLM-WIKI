@@ -127,7 +127,14 @@ def builder_tools(bundle: dict) -> list:
         return json.dumps([{"kind": r.get("kind"), "text": r.get("text")} for r in rows],
                           ensure_ascii=False)
 
-    return [read_context, check_draft, list_existing_skills, recall_memory]
+    tools = [read_context, check_draft, list_existing_skills, recall_memory]
+    # External MCP read tools (e.g. query Supabase / fetch a page) when enabled.
+    try:
+        import mcp_tools
+        tools += mcp_tools.read_tools()
+    except Exception:  # noqa: BLE001
+        pass
+    return tools
 
 
 def run_tool_loop(chat, tools: list, system: str, user: str, *, max_iters: int = 6) -> dict:

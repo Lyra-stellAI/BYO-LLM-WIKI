@@ -44,3 +44,9 @@ hnswlib>=0.8.0
 # is set:
 # opentelemetry-sdk>=1.27.0
 # opentelemetry-exporter-otlp-proto-http>=1.27.0
+
+# MCP (Model Context Protocol): connect agents to external MCP servers (Supabase,
+# GitHub, fetch, …) and expose BYO-WIKI as an MCP server. Optional; the app is
+# local-first and MCP features no-op until MCP_ENABLED is set + these are installed:
+# langchain-mcp-adapters>=0.3.0
+# mcp>=1.0.0

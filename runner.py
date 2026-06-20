@@ -122,7 +122,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "skill-build", "skill-list", "skill-show", "skill-eval", "skill-pending",
         "skill-review", "skill-rebuild", "skill-refine", "skill-export", "skill-forget",
         "skill-runs", "skill-observability", "skill-backends", "skill-trace-init",
-        "skill-graph-build", "skill-graph-resume", "skill-graph-status"])
+        "skill-graph-build", "skill-graph-resume", "skill-graph-status",
+        "mcp-list", "mcp-serve", "mcp-call", "mcp-ingest"])
     p.add_argument("--overwrite", action="store_true",
                    help="rag-crossdoc-labels: redraft key_points for already-labeled questions too")
     p.add_argument("--rerank", action=argparse.BooleanOptionalAction, default=True,
@@ -165,6 +166,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="skill-build/refine generator: in-process pipeline or the Claude Code subprocess agent")
     p.add_argument("--thread-id", dest="thread_id", default=None,
                    help="skill-graph-resume/status: the LangGraph thread to resume/inspect")
+    # MCP (mcp-*)
+    p.add_argument("--server", default=None, help="mcp-call/mcp-ingest: MCP server name")
+    p.add_argument("--tool", default=None, help="mcp-call/mcp-ingest: MCP tool name")
+    p.add_argument("--args", dest="mcp_args", default=None, help="mcp-call/mcp-ingest: tool args as JSON")
+    p.add_argument("--confirm", action="store_true", help="mcp-call: approve a gated write tool")
     return p
 
 
@@ -664,6 +670,41 @@ def main(argv=None) -> int:
             return 2
         import skill_library as sk
         print("removed" if sk.forget(args.skill_id) else "not found")
+        return 0
+
+    # --- MCP (Model Context Protocol) ---------------------------------------
+    if args.mode == "mcp-list":
+        import mcp_tools, json as _json
+        print(_json.dumps(mcp_tools.status(), indent=2))
+        return 0
+
+    if args.mode == "mcp-serve":
+        import mcp_server
+        print("Starting BYO-WIKI MCP server (stdio)…", file=sys.stderr)
+        mcp_server.main()
+        return 0
+
+    if args.mode in ("mcp-call", "mcp-ingest"):
+        if not args.server or not args.tool:
+            print("error: --server and --tool are required", file=sys.stderr)
+            return 2
+        import mcp_tools, mcp_config, json as _json
+        try:
+            margs = _json.loads(args.mcp_args) if args.mcp_args else {}
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: --args must be valid JSON: {exc}", file=sys.stderr)
+            return 2
+        if args.mode == "mcp-ingest":
+            res = mcp_tools.ingest_result(args.server, args.tool, margs,
+                                          source_title=args.title or "")
+            print(_json.dumps(res, indent=2))
+            return 0 if res.get("ok") else 1
+        # mcp-call: read tool, or gated write with --confirm
+        if mcp_config.is_write_tool(args.server, args.tool):
+            res = mcp_tools.execute_write(args.server, args.tool, margs, approved=args.confirm)
+            print(_json.dumps(res, indent=2))
+            return 0 if res.get("ok") else 1
+        print(mcp_tools.call_tool(args.server, args.tool, margs))
         return 0
 
     return 2

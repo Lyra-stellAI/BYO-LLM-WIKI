@@ -901,6 +901,66 @@ def api_skill_delete(skill_id):
     return jsonify({"removed": skills.forget(skill_id), "stats": skills.stats()})
 
 
+# --- MCP (Model Context Protocol) endpoints ---------------------------------
+@app.route("/api/mcp/status")
+def api_mcp_status():
+    """Enabled MCP servers + loaded tools (read/write), and whether writes are allowed."""
+    import mcp_tools
+    return jsonify(mcp_tools.status())
+
+
+@app.route("/api/mcp/call", methods=["POST"])
+def api_mcp_call():
+    """Invoke a READ MCP tool. Write tools are refused here (use /api/mcp/write)."""
+    import mcp_tools, mcp_config
+    data = request.get_json(silent=True) or {}
+    server = (data.get("server") or "").strip()
+    tool = (data.get("tool") or "").strip()
+    args = data.get("args") if isinstance(data.get("args"), dict) else {}
+    if not server or not tool:
+        return jsonify({"error": "server and tool are required."}), 400
+    if mcp_config.is_write_tool(server, tool):
+        return jsonify({"error": f"{server}/{tool} is a write tool; use /api/mcp/write."}), 400
+    try:
+        return jsonify({"ok": True, "result": mcp_tools.call_tool(server, tool, args)})
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/mcp/write", methods=["POST"])
+def api_mcp_write():
+    """Gated write: deny-by-default; requires MCP_ALLOW_WRITES + ``approved: true``.
+    Without approval it returns a preview + approval_required for a human to confirm."""
+    import mcp_tools
+    data = request.get_json(silent=True) or {}
+    server = (data.get("server") or "").strip()
+    tool = (data.get("tool") or "").strip()
+    args = data.get("args") if isinstance(data.get("args"), dict) else {}
+    if not server or not tool:
+        return jsonify({"error": "server and tool are required."}), 400
+    res = mcp_tools.execute_write(server, tool, args, approved=bool(data.get("approved")))
+    return jsonify(res), (200 if (res.get("ok") or res.get("approval_required")) else 400)
+
+
+@app.route("/api/mcp/ingest", methods=["POST"])
+def api_mcp_ingest():
+    """Call a READ MCP tool and stage its output into the knowledge graph (staging)."""
+    import mcp_tools
+    data = request.get_json(silent=True) or {}
+    server = (data.get("server") or "").strip()
+    tool = (data.get("tool") or "").strip()
+    args = data.get("args") if isinstance(data.get("args"), dict) else {}
+    if not server or not tool:
+        return jsonify({"error": "server and tool are required."}), 400
+    try:
+        res = mcp_tools.ingest_result(server, tool, args,
+                                      source_title=(data.get("source_title") or "").strip())
+        res["stats"] = kg.stats()
+        return jsonify(res), (200 if res.get("ok") else 400)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+
+
 # --- RAG / contextual vector library endpoints ------------------------------
 @app.route("/api/rag/stats")
 def api_rag_stats():

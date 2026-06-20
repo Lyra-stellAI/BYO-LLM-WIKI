@@ -17,3 +17,4 @@ data/*.sqlite-*
 data/library/
 data/vectors/
 data/skills/
+mcp.json

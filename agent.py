@@ -327,6 +327,12 @@ def _build_agent(model, workspace: Path, *, read_only: bool):
         tools = kg_tools.read_tools() + memory_tools.read_tools() + skill_tools.read_tools()
     else:
         tools = kg_tools.all_tools() + memory_tools.all_tools() + skill_tools.read_tools()
+    # External MCP read tools (Supabase, fetch, …) when enabled — best-effort.
+    try:
+        import mcp_tools
+        tools = tools + mcp_tools.read_tools()
+    except Exception:  # noqa: BLE001
+        pass
     return create_deep_agent(
         model=model,
         tools=tools,
