@@ -484,6 +484,67 @@ def test_tracing_tree_plan():
     assert plan["children"][2]["metadata"]["tool_calls"] == 2  # codeact carries tool calls
 
 
+# --- LangGraph StateGraph orchestration (interrupt + refine cycle) -----------
+def _patch_pipeline_phases():
+    """Swap the LLM phases for deterministic stubs; returns a restore() callable."""
+    saved = (skill_agent._resolve_model, skill_agent.understand,
+             skill_agent.analyze, skill_agent.codeact)
+    spec = _good_skill_spec()
+    skill_agent._resolve_model = lambda *a, **k: (None, "anthropic", "claude-opus-4-8")
+    skill_agent.understand = lambda bundle, *, chat, meter=None: {"domain": "d", "summary": "s"}
+    skill_agent.analyze = lambda bundle, understanding, *, chat, goal="", meter=None: {
+        "name": spec["name"], "description": spec["description"],
+        "success_criteria": spec["success_criteria"], "triggers": spec["triggers"],
+        "anti_triggers": spec["anti_triggers"], "tools": spec["tools"]}
+    skill_agent.codeact = lambda bundle, sp, *, chat, revision_note="", meter=None: dict(spec)
+
+    def restore():
+        (skill_agent._resolve_model, skill_agent.understand,
+         skill_agent.analyze, skill_agent.codeact) = saved
+    return restore
+
+
+def test_graph_build_pauses_then_accepts():
+    import skill_graph
+    os.environ["SKILL_GRAPH_CHECKPOINT"] = "memory"
+    skill_graph.reset()
+    restore = _patch_pipeline_phases()
+    try:
+        r = skill_graph.run_build(text="changelog v2.0 added X; release notes context",
+                                  use_tools=False, run_rubric=False, run_triggering=False)
+        assert r["awaiting_review"] is True and r["thread_id"]
+        assert r["interrupt"]["type"] == "skill_review"
+        # paused at human_review per the checkpointer
+        st = skill_graph.get_status(r["thread_id"])
+        assert st["awaiting_review"] is True
+        fin = skill_graph.resume_review(r["thread_id"], decision="accept", score=0.9)
+        assert fin["done"] is True and fin["status"] == sk.ACCEPTED
+    finally:
+        restore()
+        skill_graph.reset()
+
+
+def test_graph_revise_cycles_back():
+    import skill_graph
+    os.environ["SKILL_GRAPH_CHECKPOINT"] = "memory"
+    skill_graph.reset()
+    restore = _patch_pipeline_phases()
+    try:
+        r = skill_graph.run_build(text="changelog release notes context",
+                                  use_tools=False, run_rubric=False, run_triggering=False)
+        tid = r["thread_id"]
+        # revise -> loops through codeact again, re-evaluates, pauses once more
+        rev = skill_graph.resume_review(tid, decision="revise", notes="add an example")
+        assert rev["awaiting_review"] is True
+        assert rev["skill"]["version"] >= 2 and rev["skill"]["revisions"] >= 1
+        # then accept
+        acc = skill_graph.resume_review(tid, decision="accept")
+        assert acc["status"] == sk.ACCEPTED
+    finally:
+        restore()
+        skill_graph.reset()
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]

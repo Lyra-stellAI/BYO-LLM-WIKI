@@ -12,6 +12,8 @@ env/
 .vscode/
 data/*.json
 data/*.tmp
+data/*.sqlite
+data/*.sqlite-*
 data/library/
 data/vectors/
 data/skills/

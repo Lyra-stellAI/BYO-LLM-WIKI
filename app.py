@@ -642,6 +642,87 @@ def api_skill_build():
         return jsonify({"error": str(e)}), 400
 
 
+def _skill_graph_or_error():
+    try:
+        import skill_graph
+        return skill_graph, None
+    except Exception as e:  # noqa: BLE001
+        return None, (jsonify({"error": "LangGraph orchestration requires `langgraph` "
+                              f"(pip install langgraph langgraph-checkpoint-sqlite): {e}"}), 503)
+
+
+@app.route("/api/skill/graph/build", methods=["POST"])
+def api_skill_graph_build():
+    """Run the build as a checkpointed LangGraph StateGraph; pauses at human review."""
+    mod, err = _skill_graph_or_error()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    chunk_ids = data.get("chunk_ids") if isinstance(data.get("chunk_ids"), list) else None
+    tags_in = data.get("tags")
+    tags = ([t.strip() for t in tags_in.split(",") if t.strip()] if isinstance(tags_in, str)
+            else [str(t).strip() for t in tags_in if str(t).strip()] if isinstance(tags_in, list)
+            else None)
+    if not (chunk_ids or (data.get("text") or "").strip() or (data.get("query") or "").strip() or tags):
+        return jsonify({"error": "Provide context: chunk_ids, text, query, or tags."}), 400
+    try:
+        res = mod.run_build(
+            chunk_ids=chunk_ids, text=(data.get("text") or "").strip() or None,
+            query=(data.get("query") or "").strip() or None, tags=tags,
+            where=(data.get("where") or "overall"), goal=(data.get("goal") or "").strip(),
+            provider=(data.get("provider") or "auto").strip().lower(),
+            model=(data.get("model") or "").strip() or None,
+            backend=(data.get("backend") or "").strip().lower() or None,
+            use_tools=bool(data.get("use_tools", True)),
+            run_rubric=bool(data.get("run_rubric", True)),
+            run_triggering=bool(data.get("run_triggering", True)))
+        res["stats"] = skills.stats()
+        res["checkpoint"] = mod.checkpoint_backend()
+        return jsonify(res)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/skill/graph/resume", methods=["POST"])
+def api_skill_graph_resume():
+    """Resume a paused graph build with a human decision (accept | reject | revise)."""
+    mod, err = _skill_graph_or_error()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    thread_id = (data.get("thread_id") or "").strip()
+    decision = (data.get("decision") or "").strip().lower()
+    if not thread_id or decision not in {"accept", "reject", "revise"}:
+        return jsonify({"error": "thread_id and decision (accept|reject|revise) are required."}), 400
+    score = data.get("score")
+    try:
+        score = float(score) if score is not None and score != "" else None
+    except (TypeError, ValueError):
+        score = None
+    try:
+        res = mod.resume_review(thread_id, decision=decision, score=score,
+                                notes=(data.get("notes") or "").strip(),
+                                reviewer=(data.get("reviewer") or "user").strip())
+        res["stats"] = skills.stats()
+        return jsonify(res)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/skill/graph/status")
+def api_skill_graph_status():
+    mod, err = _skill_graph_or_error()
+    if err:
+        return err
+    thread_id = (request.args.get("thread_id") or "").strip()
+    if not thread_id:
+        return jsonify({"error": "thread_id is required."}), 400
+    try:
+        return jsonify(mod.get_status(thread_id))
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+
+
 @app.route("/api/skill/<skill_id>/eval", methods=["POST"])
 def api_skill_eval(skill_id):
     """Re-run evaluation (deterministic checks + rubric panel) on an existing skill."""

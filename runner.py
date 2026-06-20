@@ -121,7 +121,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "memory-list", "memory-recall", "memory-add", "memory-forget",
         "skill-build", "skill-list", "skill-show", "skill-eval", "skill-pending",
         "skill-review", "skill-rebuild", "skill-refine", "skill-export", "skill-forget",
-        "skill-runs", "skill-observability", "skill-backends", "skill-trace-init"])
+        "skill-runs", "skill-observability", "skill-backends", "skill-trace-init",
+        "skill-graph-build", "skill-graph-resume", "skill-graph-status"])
     p.add_argument("--overwrite", action="store_true",
                    help="rag-crossdoc-labels: redraft key_points for already-labeled questions too")
     p.add_argument("--rerank", action=argparse.BooleanOptionalAction, default=True,
@@ -162,6 +163,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="skill-build/refine: let the author use tools to check+refine its draft (default: on)")
     p.add_argument("--backend", default=None, choices=["pipeline", "claude_code"],
                    help="skill-build/refine generator: in-process pipeline or the Claude Code subprocess agent")
+    p.add_argument("--thread-id", dest="thread_id", default=None,
+                   help="skill-graph-resume/status: the LangGraph thread to resume/inspect")
     return p
 
 
@@ -565,6 +568,58 @@ def main(argv=None) -> int:
         import skill_runs, skill_tracing, json as _json
         print(_json.dumps(skill_runs.benchmark(skill_id=args.skill_id), indent=2))
         print("tracing:", _json.dumps(skill_tracing.status()))
+        return 0
+
+    if args.mode == "skill-graph-build":
+        tags = [t.strip() for t in (args.tags or "").split(",") if t.strip()] or None
+        if not (args.query or args.text or tags):
+            print("error: provide --query, --text, or --tags as context", file=sys.stderr)
+            return 2
+        import skill_graph
+        try:
+            res = skill_graph.run_build(query=args.query, text=args.text, tags=tags,
+                                        goal=args.goal or "", provider=args.provider, model=args.model,
+                                        backend=args.backend, use_tools=args.tools,
+                                        run_rubric=args.rubric)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if res.get("awaiting_review"):
+            s = res.get("skill") or {}
+            print(f"Build paused for review (checkpoint={skill_graph.checkpoint_backend()}).")
+            print(f"  thread_id: {res['thread_id']}")
+            print(f"  skill: {s.get('name')} ({s.get('id')})  gate={res.get('gate')}")
+            print(f"\nResume: --mode skill-graph-resume --thread-id {res['thread_id']} "
+                  f"--decision accept|reject|revise [--notes '...']")
+        else:
+            print(f"Build finished: status={res.get('status')}")
+        return 0
+
+    if args.mode == "skill-graph-resume":
+        if not args.thread_id or not args.decision:
+            print("error: --thread-id and --decision (accept|reject|revise) are required",
+                  file=sys.stderr)
+            return 2
+        import skill_graph
+        try:
+            res = skill_graph.resume_review(args.thread_id, decision=args.decision,
+                                            score=args.score, notes=args.notes or "")
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if res.get("awaiting_review"):
+            print(f"Revised and paused again — thread_id {res['thread_id']} "
+                  f"(skill v{(res.get('skill') or {}).get('version')}). Resume again to decide.")
+        else:
+            print(f"Done: status={res.get('status')}")
+        return 0
+
+    if args.mode == "skill-graph-status":
+        if not args.thread_id:
+            print("error: --thread-id is required", file=sys.stderr)
+            return 2
+        import skill_graph, json as _json
+        print(_json.dumps(skill_graph.get_status(args.thread_id), indent=2))
         return 0
 
     if args.mode == "skill-trace-init":

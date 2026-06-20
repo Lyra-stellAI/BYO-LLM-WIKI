@@ -13,6 +13,14 @@ deepagents>=0.6.0
 langchain-anthropic>=1.0.0
 langchain-openai>=0.3.0
 
+# LangGraph orchestration of the skill-build loop: durable human-in-the-loop
+# (interrupt + checkpointer) and the refine cycle. The linear skill pipeline works
+# without it; install to use the graph backend (/api/skill/graph/*, skill-graph-*).
+langgraph>=1.0.0
+langgraph-checkpoint-sqlite>=2.0.0
+# Postgres checkpoints (SKILL_GRAPH_CHECKPOINT=postgres, e.g. Supabase):
+# langgraph-checkpoint-postgres>=2.0.0
+
 # Contextual retrieval / vector library (Library Q&A tab, rag-* CLI modes).
 # Embeddings use the OpenAI API; hnswlib provides the HNSW index (numpy fallback).
 numpy>=1.24.0

@@ -149,6 +149,15 @@ checks, low triggering precision/recall, weakest rubric dimension) and rebuilds 
 to fix them. Accepted skills are also saved to memory, so the agent auto-loads them
 later — the memory↔skill partnership.
 
+**LangGraph orchestration** (`skill_graph.py`, optional). The same pipeline can run
+as a LangGraph `StateGraph` (understand → analyze → codeact → evaluate nodes, the
+gate as a conditional edge, the refine loop as a real cycle), where **human review
+is a durable `interrupt()`**: the build *pauses* at the gate, its state is
+checkpointed, and it *resumes* — even in a separate process — when a decision
+arrives (`accept` finalizes, `reject` ends, `revise` loops back through `codeact`
+with the notes). Checkpoints persist to SQLite by default (`data/skill_graph.sqlite`),
+swappable to Postgres (e.g. Supabase) or in-memory via `SKILL_GRAPH_CHECKPOINT`.
+
 ## Web UI
 
 Tabs for **Read** (web search, or paste a link to fetch + extract its context;
@@ -182,6 +191,9 @@ python runner.py --mode skill-review --skill-id skill_xxx --decision accept --sc
 python runner.py --mode skill-refine --skill-id skill_xxx    # fix measured weaknesses
 python runner.py --mode skill-observability                 # benchmark: pass-rate, latency, tokens
 python runner.py --mode skill-trace-init                    # create the LangSmith project for skill runs
+# LangGraph orchestrator: a checkpointed build that pauses at review and resumes later
+python runner.py --mode skill-graph-build --text "…" --goal "…"   # prints a thread_id, pauses
+python runner.py --mode skill-graph-resume --thread-id <tid> --decision accept   # (any later process)
 python runner.py --mode skill-list | skill-runs | skill-show --skill-id skill_xxx
 
 # Contextual RAG + evaluation
@@ -249,8 +261,9 @@ the query is a link; `/summarize`; `/providers`), **knowledge graph** (`/kg/stat
 files}`), **agent** (`/agent/{status,ask,maintain}`), **memory** (`/memory/{stats,
 list,recall,add,feedback}`), **RAG** (`/rag/{stats,ingest,search,ask,eval,
 experiment,dataset,ragas,crossdoc,crossdoc/labels}`), and **skills**
-(`/skill/{stats,list,pending,build,observability,runs,backends,tracing/init}`, plus
-`/skill/<id>` and `/skill/<id>/{eval,review,rebuild,refine,export}`). Most accept `{provider?,
+(`/skill/{stats,list,pending,build,observability,runs,backends,tracing/init}`, the
+LangGraph endpoints `/skill/graph/{build,resume,status}`, plus `/skill/<id>` and
+`/skill/<id>/{eval,review,rebuild,refine,export}`). Most accept `{provider?,
 model?}`; cross-doc returns `judge_alignment` when human labels exist, and
 `/skill/build` (accepts `use_tools` and `backend` = `pipeline` | `claude_code`)
 returns every phase plus the eval/gate report and an observability summary
@@ -275,6 +288,7 @@ Set provider keys (above) plus, for tracing/eval:
 | `SKILL_BACKEND` | default generator: `pipeline` or `claude_code`. |
 | `CLAUDE_CODE_BIN` / `CLAUDE_CODE_MODEL` | Claude Code CLI path + model for the `claude_code` backend. |
 | `SKILL_TRACING` / `LANGSMITH_SKILL_PROJECT` | export skill runs to LangSmith + OTel, in their own project. |
+| `SKILL_GRAPH_CHECKPOINT` | LangGraph checkpoint store: `sqlite` (default) / `postgres` / `memory`. |
 | `PORT` | bind port (default 5000). |
 
 `.env` is gitignored — never commit real keys. See `.env.example` for the full list.
@@ -287,6 +301,7 @@ agent.py kg_tools.py    deepagents harness + graph tools
 memory.py memory_tools.py   cross-session memory (layer 6)
 skill_library.py skill_eval.py skill_agent.py skill_tools.py   agent-skill build loop (layer 7)
 skill_runtime.py skill_runs.py skill_claude_agent.py skill_tracing.py   tool-use loop · observability · Claude Code subprocess · LangSmith/OTel export
+skill_graph.py          LangGraph StateGraph: durable human-in-the-loop + refine cycle
 knowledge_graph.py      multi-layer graph store + queries
 ingestion.py extraction.py enrich.py   chunking, entity/relation/topic extraction
 pipeline.py embeddings.py vectorstore.py   contextual ingest + HNSW index + MMR
