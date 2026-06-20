@@ -166,7 +166,8 @@ Graph** (ingest Files/URLs/Text, browse staging + the layer-colored graph,
 *Integrate*, *Ask*, *Maintain*), **Library Q&A** (cited answers with re-ranker /
 MMR toggles), **Memory** (recall, add, reinforce/forget), and **Agent Skills**
 (build a skill from context, watch the eval/gate report, then accept / revise /
-reject from the review queue).
+reject from the review queue; toggle **durable ⛓** to run it as a checkpointed
+LangGraph build that pauses for review and can be resumed later).
 
 ## Command line
 

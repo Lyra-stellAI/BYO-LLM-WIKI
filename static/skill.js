@@ -113,10 +113,15 @@
            <input class="skill-notes" data-id="${esc(s.id)}" placeholder="reviewer notes / revision guidance (optional)" />
            <input class="skill-score" data-id="${esc(s.id)}" type="number" min="0" max="1" step="0.1" placeholder="score 0-1" />
          </div>` : "";
-    return `<div class="kg-item skill-card" data-id="${esc(s.id)}">
+    const thread = s.graph_thread_id || "";
+    const durableBadge = thread
+      ? `<span class="skill-badge skill-st-pending_review" title="LangGraph thread ${esc(thread)} — decisions resume the durable build">⛓ durable</span>`
+      : "";
+    return `<div class="kg-item skill-card" data-id="${esc(s.id)}" data-thread="${esc(thread)}">
       <div class="kg-preview"><strong>${esc(s.name)}</strong> — ${esc(s.description || "")}</div>
       <div class="kg-meta">
         ${statusBadge(s.status)}
+        ${durableBadge}
         ${s.eval ? gateBadge(s.eval.gate) : ""}
         ${evalSummary(s.eval)}
         ${s.version ? `<span class="kg-tag">v${esc(String(s.version))}</span>` : ""}
@@ -188,6 +193,22 @@
           : "Awaiting your review below.")}</div>`;
   }
 
+  function renderDurableResult(res) {
+    const s = res.skill || {};
+    const ev = res.eval || {};
+    const det = ev.deterministic || {};
+    buildOut.classList.remove("hidden");
+    buildOut.innerHTML = `
+      <h4>⛓ Durable build paused for review — “${esc(s.name)}” ${statusBadge(res.status || s.status)} ${gateBadge(res.gate)}</h4>
+      <div class="cite"><strong>Thread.</strong> <code>${esc(res.thread_id || "")}</code>
+        <span class="kg-tag">checkpoint: ${esc(res.checkpoint || "sqlite")}</span></div>
+      <div class="cite"><strong>Description.</strong> ${esc(s.description || "")}</div>
+      <div class="cite"><strong>Eval.</strong> deterministic ${esc(String(det.passed))}/${esc(String(det.total))}
+        · rubric mean ${esc(String(ev.rubric_mean ?? "—"))}</div>
+      <div class="ask-note">Checkpointed and waiting. Decide in the review queue below
+        (accept / revise / reject) — even later, or after a restart.</div>`;
+  }
+
   async function doBuild() {
     const text = $("#skillText").value.trim();
     const query = $("#skillQuery").value.trim();
@@ -197,14 +218,15 @@
       buildProg.textContent = "Provide context: paste text, a query, or tags.";
       return;
     }
+    const durable = $("#skillDurable").checked;
     buildBtn.disabled = true;
     const prev = buildBtn.textContent;
     buildBtn.textContent = "Building…";
     buildProg.className = "ingest-progress";
-    buildProg.innerHTML = `<span class="spinner"></span>understand → analyze → codeact → eval → gate…`;
+    buildProg.innerHTML = `<span class="spinner"></span>${durable ? "⛓ " : ""}understand → analyze → codeact → eval → gate…`;
     buildOut.classList.add("hidden");
     try {
-      const res = await postJSON("/api/skill/build", {
+      const res = await postJSON(durable ? "/api/skill/graph/build" : "/api/skill/build", {
         text: text || undefined,
         query: query || undefined,
         tags: tags || undefined,
@@ -214,8 +236,13 @@
         backend: $("#skillBackend").value || undefined,
       });
       buildProg.className = "ingest-progress ok";
-      buildProg.textContent = `Drafted and evaluated (gate: ${res.gate}).`;
-      renderBuildResult(res);
+      if (durable && res.awaiting_review) {
+        buildProg.textContent = `Paused for review (checkpoint: ${res.checkpoint || "sqlite"}).`;
+        renderDurableResult(res);
+      } else {
+        buildProg.textContent = `Drafted and evaluated (gate: ${res.gate}).`;
+        renderBuildResult(res);
+      }
       await loadList();
     } catch (e) {
       buildProg.className = "ingest-progress error";
@@ -278,8 +305,16 @@
         await postJSON(`/api/skill/${encodeURIComponent(id)}/refine`, {});
         await loadList();
       } else if (action === "accept" || action === "reject" || action === "revise") {
-        await postJSON(`/api/skill/${encodeURIComponent(id)}/review`,
-          { decision: action, notes, score });
+        const thread = card.dataset.thread;
+        if (thread) {
+          // Durable build: resume the LangGraph thread (pauses again on revise).
+          act.textContent = action + "…";
+          await postJSON("/api/skill/graph/resume",
+            { thread_id: thread, decision: action, notes, score });
+        } else {
+          await postJSON(`/api/skill/${encodeURIComponent(id)}/review`,
+            { decision: action, notes, score });
+        }
         await loadList();
       }
     } catch (err) {

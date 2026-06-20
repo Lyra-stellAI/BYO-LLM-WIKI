@@ -347,6 +347,12 @@ def _summarize(thread_id: str, state: dict) -> dict:
     interrupts = state.get("__interrupt__") if isinstance(state, dict) else None
     if interrupts:
         payload = getattr(interrupts[0], "value", interrupts[0])
+        sid = payload.get("skill_id") if isinstance(payload, dict) else None
+        if sid:  # link the paused build to its thread so the review queue can resume it
+            try:
+                skills.set_thread(sid, thread_id)
+            except Exception:  # noqa: BLE001
+                pass
         return {"ok": True, "thread_id": thread_id, "awaiting_review": True,
                 "status": "pending_review", "gate": payload.get("gate"),
                 "skill": payload.get("skill"), "eval": payload.get("eval"),

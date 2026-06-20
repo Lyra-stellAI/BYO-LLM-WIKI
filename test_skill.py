@@ -514,6 +514,9 @@ def test_graph_build_pauses_then_accepts():
                                   use_tools=False, run_rubric=False, run_triggering=False)
         assert r["awaiting_review"] is True and r["thread_id"]
         assert r["interrupt"]["type"] == "skill_review"
+        # the paused build's thread is linked to the skill (so the review queue can resume it)
+        sid = r["skill"]["id"]
+        assert sk.get_skill(sid)["graph_thread_id"] == r["thread_id"]
         # paused at human_review per the checkpointer
         st = skill_graph.get_status(r["thread_id"])
         assert st["awaiting_review"] is True

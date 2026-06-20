@@ -189,7 +189,7 @@ _PUBLIC_FIELDS = (
     "id", "name", "slug", "description", "instructions", "steps", "triggers",
     "anti_triggers", "tools", "success_criteria", "tests", "provenance",
     "status", "version", "revisions", "eval", "human", "history",
-    "created_at", "updated_at", "accepted_at",
+    "graph_thread_id", "created_at", "updated_at", "accepted_at",
 )
 
 
@@ -308,6 +308,20 @@ def append_history(skill_id: str, phase: str, outcome: str, *, note: str = "") -
             return False
         s.setdefault("history", []).append(
             {"at": _now(), "phase": phase, "outcome": outcome, "note": _preview(note, 240)})
+        s["updated_at"] = _now()
+        _save(data)
+        return True
+
+
+def set_thread(skill_id: str, thread_id: str) -> bool:
+    """Attach the LangGraph thread that owns this (paused) build, so the review
+    queue can resume it later via /api/skill/graph/resume."""
+    with _lock:
+        data = _load()
+        s = _by_id(data, skill_id)
+        if s is None:
+            return False
+        s["graph_thread_id"] = thread_id
         s["updated_at"] = _now()
         _save(data)
         return True
