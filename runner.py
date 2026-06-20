@@ -120,7 +120,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "rag-crossdoc-labels", "kg-extract",
         "memory-list", "memory-recall", "memory-add", "memory-forget",
         "skill-build", "skill-list", "skill-show", "skill-eval", "skill-pending",
-        "skill-review", "skill-rebuild", "skill-export", "skill-forget"])
+        "skill-review", "skill-rebuild", "skill-refine", "skill-export", "skill-forget",
+        "skill-runs", "skill-observability"])
     p.add_argument("--overwrite", action="store_true",
                    help="rag-crossdoc-labels: redraft key_points for already-labeled questions too")
     p.add_argument("--rerank", action=argparse.BooleanOptionalAction, default=True,
@@ -157,6 +158,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--notes", default=None, help="skill-review: reviewer notes / revision guidance")
     p.add_argument("--rubric", action=argparse.BooleanOptionalAction, default=True,
                    help="skill-build/eval: run the LLM rubric panel (default: on; --no-rubric for deterministic-only)")
+    p.add_argument("--tools", action=argparse.BooleanOptionalAction, default=True,
+                   help="skill-build/refine: let the author use tools to check+refine its draft (default: on)")
     return p
 
 
@@ -419,18 +422,26 @@ def main(argv=None) -> int:
         try:
             res = skill_agent.build_skill(
                 query=args.query, text=args.text, tags=tags, goal=args.goal or "",
-                provider=args.provider, model=args.model, run_rubric=args.rubric)
+                provider=args.provider, model=args.model, run_rubric=args.rubric,
+                use_tools=args.tools)
         except skill_agent.SkillError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         s, ev = res["skill"], res["eval"]
+        obs = res.get("observability", {})
         print(f"Drafted skill '{s['name']}' ({s['id']})  →  gate={res['gate']}  status={s['status']}")
+        print(f"  author: {res['provider']}/{res['model']}"
+              f"{' +tools (%d calls)' % obs.get('tools_used', 0) if obs.get('tool_mode') else ''}"
+              f"  ·  {obs.get('duration_ms', '?')} ms  ·  {obs.get('tokens', '?')} tokens")
         det = ev["deterministic"]
         print(f"  deterministic: {det['passed']}/{det['total']} passed" +
               (f"  (failures: {', '.join(det['failures'])})" if det['failures'] else ""))
         if ev.get("rubric") and ev["rubric"].get("mean") is not None:
             print(f"  rubric mean: {ev['rubric']['mean']}  per-dim: "
                   f"{_json.dumps(ev['rubric'].get('per_dimension', {}))}")
+        if ev.get("triggering"):
+            t = ev["triggering"]
+            print(f"  triggering: precision={t.get('precision')} recall={t.get('recall')} f1={t.get('f1')}")
         print(f"  gate reasons: {'; '.join(ev.get('gate_reasons', []))}")
         if s["status"] == sk.PENDING_REVIEW:
             print("\nNext: review it with "
@@ -518,6 +529,39 @@ def main(argv=None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         print(f"Rebuilt '{res['skill']['name']}' → gate={res['gate']} status={res['status']}")
+        return 0
+
+    if args.mode == "skill-refine":
+        if not args.skill_id:
+            print("error: --skill-id is required for skill-refine", file=sys.stderr)
+            return 2
+        import skill_agent
+        try:
+            res = skill_agent.refine_skill(args.skill_id, provider=args.provider,
+                                           model=args.model, use_tools=args.tools,
+                                           run_rubric=args.rubric)
+        except skill_agent.SkillError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        obs = res.get("observability", {})
+        print(f"Refined '{res['skill']['name']}' → gate={res['gate']} status={res['status']} "
+              f"({obs.get('duration_ms','?')} ms, {obs.get('tokens','?')} tokens)")
+        return 0
+
+    if args.mode == "skill-runs":
+        import skill_runs
+        rows = skill_runs.list_runs(skill_id=args.skill_id, limit=50)
+        print(f"--- {len(rows)} run(s) ---")
+        for r in rows:
+            m = r.get("metrics") or {}
+            print(f"  [{r['kind']:<7}] {r.get('at','')[:19]}  {r.get('model','')}  "
+                  f"gate={r.get('gate')}  {r.get('duration_ms','?')}ms  {r.get('tokens','?')}tok  "
+                  f"det={m.get('deterministic_ratio')} rubric={m.get('rubric_mean')}  {r.get('skill_name','')}")
+        return 0
+
+    if args.mode == "skill-observability":
+        import skill_runs, json as _json
+        print(_json.dumps(skill_runs.benchmark(skill_id=args.skill_id), indent=2))
         return 0
 
     if args.mode == "skill-export":

@@ -554,6 +554,28 @@ def api_skill_pending():
     return jsonify({"skills": skills.pending_review(), "stats": skills.stats()})
 
 
+@app.route("/api/skill/observability")
+def api_skill_observability():
+    """Benchmark readout over logged runs: gate pass-rate, avg latency/tokens, etc."""
+    import skill_runs
+    skill_id = (request.args.get("skill_id") or "").strip() or None
+    return jsonify({"benchmark": skill_runs.benchmark(skill_id=skill_id),
+                    "recent": skill_runs.list_runs(skill_id=skill_id, limit=20)})
+
+
+@app.route("/api/skill/runs")
+def api_skill_runs():
+    """Raw observability runs (build / eval / refine / review) with per-run metrics."""
+    import skill_runs
+    skill_id = (request.args.get("skill_id") or "").strip() or None
+    kind = (request.args.get("kind") or "").strip() or None
+    try:
+        limit = int(request.args.get("limit") or 50)
+    except (TypeError, ValueError):
+        limit = 50
+    return jsonify({"runs": skill_runs.list_runs(skill_id=skill_id, kind=kind, limit=limit)})
+
+
 @app.route("/api/skill/<skill_id>")
 def api_skill_get(skill_id):
     s = skills.get_skill(skill_id)
@@ -585,6 +607,8 @@ def api_skill_build():
             provider=(data.get("provider") or "auto").strip().lower(),
             model=(data.get("model") or "").strip() or None,
             run_rubric=bool(data.get("run_rubric", True)),
+            run_triggering=bool(data.get("run_triggering", True)),
+            use_tools=bool(data.get("use_tools", True)),
             judge_provider=(data.get("judge_provider") or "").strip().lower() or None,
             judge_model=(data.get("judge_model") or "").strip() or None)
         res["stats"] = skills.stats()
@@ -601,14 +625,21 @@ def api_skill_eval(skill_id):
         return jsonify({"error": "Skill not found."}), 404
     data = request.get_json(silent=True) or {}
     try:
-        import skill_eval
+        import skill_eval, skill_runs
         report = skill_eval.run_eval(
             s, provider=(data.get("provider") or "auto").strip().lower(),
             model=(data.get("model") or "").strip() or None,
             run_rubric=bool(data.get("run_rubric", True)),
+            run_triggering=bool(data.get("run_triggering", True)),
             judge_provider=(data.get("judge_provider") or "").strip().lower() or None,
             judge_model=(data.get("judge_model") or "").strip() or None)
         updated = skills.record_eval(skill_id, report)
+        trig = report.get("triggering") or {}
+        skill_runs.record(kind="eval", skill_id=skill_id, skill_name=s.get("name", ""),
+                          gate=report["gate"], status=updated["status"],
+                          metrics={"deterministic_ratio": report["deterministic"]["ratio"],
+                                   "rubric_mean": report.get("rubric_mean"),
+                                   "trigger_f1": trig.get("f1")})
         return jsonify({"ok": True, "skill": updated, "eval": report, "stats": skills.stats()})
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": str(e)}), 400
@@ -653,6 +684,25 @@ def api_skill_rebuild(skill_id):
             model=(data.get("model") or "").strip() or None,
             extra_guidance=(data.get("extra_guidance") or "").strip(),
             run_rubric=bool(data.get("run_rubric", True)))
+        res["stats"] = skills.stats()
+        return jsonify(res)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/skill/<skill_id>/refine", methods=["POST"])
+def api_skill_refine(skill_id):
+    """Self-improvement pass: rebuild the skill to fix its measured weaknesses
+    (failed checks, triggering precision/recall, weakest rubric dimension)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        import skill_agent
+        res = skill_agent.refine_skill(
+            skill_id, provider=(data.get("provider") or "auto").strip().lower(),
+            model=(data.get("model") or "").strip() or None,
+            use_tools=bool(data.get("use_tools", True)),
+            run_rubric=bool(data.get("run_rubric", True)),
+            run_triggering=bool(data.get("run_triggering", True)))
         res["stats"] = skills.stats()
         return jsonify(res)
     except Exception as e:  # noqa: BLE001

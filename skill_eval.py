@@ -260,6 +260,66 @@ def run_rubric_panel(skill: dict, *, provider: str = "auto", model: str | None =
     }
 
 
+# --- 2b. triggering eval (false positive / negative on the skill's tests) ----
+_TRIGGER_PROMPT = """You decide whether an agent skill should fire for a user request.
+
+Skill name: {name}
+Skill description: {description}
+Use when: {triggers}
+Do NOT use when: {anti_triggers}
+
+User request: "{prompt}"
+
+Should this skill be invoked for that request? Return ONLY JSON: {{"trigger": true|false}}"""
+
+
+def run_trigger_eval(skill: dict, *, provider: str = "auto", model: str | None = None,
+                     judge_provider: str | None = None, judge_model: str | None = None) -> dict | None:
+    """Measure triggering precision/recall on the skill's own test set.
+
+    Mirrors the skill-creator's refinement signal: does the name+description fire on
+    the positive cases (recall) and stay quiet on the negative controls (precision)?
+    Returns None when there is no provider or no usable test set."""
+    tests = [t for t in (skill.get("tests") or [])
+             if isinstance(t, dict) and t.get("prompt") and t.get("should_trigger") is not None]
+    if not tests:
+        return None
+    jp, jm = (resolve_judge(*resolve_provider_model(provider, model), judge_provider, judge_model)[:2]
+              if judge_provider else resolve_provider_model(provider, model))
+    if not jp:
+        return None
+    try:
+        chat = build_chat_model(jp, jm, max_tokens=200)
+    except Exception:  # noqa: BLE001
+        return None
+    tp = fp = fn = tn = 0
+    rows = []
+    for t in tests:
+        prompt = _TRIGGER_PROMPT.format(
+            name=skill.get("name", ""), description=skill.get("description", ""),
+            triggers="; ".join(skill.get("triggers", []) or []) or "(none)",
+            anti_triggers="; ".join(skill.get("anti_triggers", []) or []) or "(none)",
+            prompt=t["prompt"])
+        try:
+            raw = _gen(chat, prompt)
+            m = re.search(r"\{.*\}", raw, re.DOTALL)
+            got = bool(json.loads(m.group()).get("trigger")) if m else False
+        except Exception:  # noqa: BLE001
+            got = False
+        want = bool(t["should_trigger"])
+        tp += want and got
+        tn += (not want) and (not got)
+        fp += (not want) and got
+        fn += want and (not got)
+        rows.append({"prompt": t["prompt"][:120], "want": want, "got": got})
+    precision = round(tp / (tp + fp), 3) if (tp + fp) else None
+    recall = round(tp / (tp + fn), 3) if (tp + fn) else None
+    f1 = (round(2 * precision * recall / (precision + recall), 3)
+          if precision and recall else (0.0 if (precision == 0 or recall == 0) else None))
+    return {"judge": f"{jp}/{jm}", "n": len(tests), "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+            "precision": precision, "recall": recall, "f1": f1, "rows": rows}
+
+
 # --- 3. the accept/reject gate ----------------------------------------------
 def decide_gate(deterministic: dict, rubric: dict | None) -> dict:
     """Combine deterministic + rubric signals into accept / reject / review.
@@ -304,8 +364,9 @@ def decide_gate(deterministic: dict, rubric: dict | None) -> dict:
 
 def run_eval(skill: dict, *, provider: str = "auto", model: str | None = None,
              judge_provider: str | None = None, judge_model: str | None = None,
-             run_rubric: bool = True, max_judges: int = 3) -> dict:
-    """Full skill evaluation: deterministic checks + rubric panel + gate decision.
+             run_rubric: bool = True, run_triggering: bool = False, max_judges: int = 3) -> dict:
+    """Full skill evaluation: deterministic checks + rubric panel + (optional)
+    triggering eval + gate decision.
 
     Returns a report ready to attach with ``skill_library.record_eval``."""
     deterministic = run_deterministic(skill)
@@ -314,10 +375,15 @@ def run_eval(skill: dict, *, provider: str = "auto", model: str | None = None,
         rubric = run_rubric_panel(skill, provider=provider, model=model,
                                   judge_provider=judge_provider, judge_model=judge_model,
                                   max_judges=max_judges)
+    triggering = None
+    if run_triggering:
+        triggering = run_trigger_eval(skill, provider=provider, model=model,
+                                      judge_provider=judge_provider, judge_model=judge_model)
     decision = decide_gate(deterministic, rubric)
     return {
         "deterministic": deterministic,
         "rubric": rubric,
+        "triggering": triggering,
         "gate": decision["gate"],
         "gate_reasons": decision["reasons"],
         "rubric_mean": decision.get("rubric_mean"),

@@ -52,8 +52,22 @@
     if (!ev) return "";
     const det = ev.deterministic || {};
     const rm = ev.rubric_mean ?? (ev.rubric && ev.rubric.mean);
+    const trig = ev.triggering;
     return `<span class="kg-tag">checks ${det.passed ?? "?"}/${det.total ?? "?"}</span>` +
-      (rm != null ? `<span class="kg-tag">rubric ${esc(String(rm))}</span>` : "");
+      (rm != null ? `<span class="kg-tag">rubric ${esc(String(rm))}</span>` : "") +
+      (trig && trig.f1 != null ? `<span class="kg-tag">trigger F1 ${esc(String(trig.f1))}</span>` : "");
+  }
+
+  async function loadObservability() {
+    try {
+      const b = (await fetch("/api/skill/observability").then((r) => r.json())).benchmark || {};
+      $("#obsBuilds").textContent = b.builds ?? 0;
+      $("#obsPass").textContent = b.gate_pass_rate == null ? "—" : b.gate_pass_rate;
+      $("#obsRubric").textContent = b.avg_rubric_mean == null ? "—" : b.avg_rubric_mean;
+      $("#obsTokens").textContent = b.avg_tokens == null ? "—" : Math.round(b.avg_tokens);
+      $("#obsLatency").textContent = b.avg_duration_ms == null ? "—" : Math.round(b.avg_duration_ms);
+      $("#obsTotalTokens").textContent = b.total_tokens ?? 0;
+    } catch (e) { /* ignore */ }
   }
 
   function actionsFor(s) {
@@ -63,10 +77,11 @@
     let acts = "";
     if (s.status === "pending_review" || s.status === "draft" || s.status === "evaluated") {
       acts += btn("accept", "✓ accept", "ok") + btn("revise", "✎ revise") + btn("reject", "✕ reject", "danger");
+      acts += btn("refine", "✦ refine");
     } else if (s.status === "needs_revision") {
-      acts += btn("rebuild", "↻ rebuild");
+      acts += btn("rebuild", "↻ rebuild") + btn("refine", "✦ refine");
     } else if (s.status === "accepted") {
-      acts += btn("export", "⤓ SKILL.md", "ok");
+      acts += btn("export", "⤓ SKILL.md", "ok") + btn("refine", "✦ refine");
     }
     acts += btn("view", "view");
     acts += btn("forget", "forget", "danger");
@@ -107,6 +122,7 @@
       listEl.innerHTML = rows.length
         ? rows.map(skillItem).join("")
         : `<div class="empty">No skills yet. Build one from context above.</div>`;
+      loadObservability();
     } catch (e) {
       listEl.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
     }
@@ -128,13 +144,24 @@
       : (rubric.error ? esc(rubric.error) : "no rubric panel");
     const failures = (det.failures || []).length
       ? `<div class="cite-prev">failed checks: ${esc((det.failures || []).join(", "))}</div>` : "";
+    const obs = res.observability || {};
+    const trig = ev.triggering;
+    const trigLine = trig
+      ? `<div class="cite"><strong>Triggering.</strong> precision ${esc(String(trig.precision))} ·
+         recall ${esc(String(trig.recall))} · F1 ${esc(String(trig.f1))}
+         <span style="color:var(--muted)">(${esc(String(trig.judge || ""))})</span></div>` : "";
     buildOut.classList.remove("hidden");
     buildOut.innerHTML = `
       <h4>Built “${esc(s.name)}” ${statusBadge(s.status)} ${gateBadge(res.gate)}</h4>
+      <div class="cite"><strong>Author.</strong> ${esc(res.provider || "")}/${esc(res.model || "")}
+        ${obs.tool_mode ? `<span class="kg-tag">tools ×${esc(String(obs.tools_used || 0))}</span>` : ""}
+        <span class="kg-tag">${esc(String(obs.duration_ms ?? "?"))} ms</span>
+        <span class="kg-tag">${esc(String(obs.tokens ?? "?"))} tokens</span></div>
       <div class="cite"><strong>Description.</strong> ${esc(s.description || "")}</div>
       <div class="cite"><strong>Eval.</strong> deterministic ${esc(String(det.passed))}/${esc(String(det.total))}
         · rubric mean ${esc(String(ev.rubric_mean ?? "—"))} <span style="color:var(--muted)">(${dimLine})</span>
         ${failures}</div>
+      ${trigLine}
       <div class="cite"><strong>Gate.</strong> ${esc((ev.gate_reasons || []).join("; "))}</div>
       <div class="ask-note">${s.status === "pending_review"
         ? "Passed the gate — review it below to accept, revise, or reject."
@@ -164,6 +191,7 @@
         tags: tags || undefined,
         goal: $("#skillGoal").value.trim() || undefined,
         run_rubric: $("#skillRubric").checked,
+        use_tools: $("#skillTools").checked,
       });
       buildProg.className = "ingest-progress ok";
       buildProg.textContent = `Drafted and evaluated (gate: ${res.gate}).`;
@@ -225,6 +253,10 @@
         act.textContent = "rebuilding…";
         await postJSON(`/api/skill/${encodeURIComponent(id)}/rebuild`, { extra_guidance: notes });
         await loadList();
+      } else if (action === "refine") {
+        act.textContent = "refining…";
+        await postJSON(`/api/skill/${encodeURIComponent(id)}/refine`, {});
+        await loadList();
       } else if (action === "accept" || action === "reject" || action === "revise") {
         await postJSON(`/api/skill/${encodeURIComponent(id)}/review`,
           { decision: action, notes, score });
@@ -239,6 +271,7 @@
 
   buildBtn.addEventListener("click", doBuild);
   $("#skillRefresh").addEventListener("click", loadList);
+  $("#skillObsRefresh").addEventListener("click", loadObservability);
   filterEl.addEventListener("change", loadList);
 
   document.querySelectorAll('.tab[data-tab="skill"]').forEach((t) =>

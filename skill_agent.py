@@ -27,11 +27,13 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 import knowledge_graph as kg
 import skill_eval
 import skill_library as skills
-from providers import ProviderError, build_chat_model, resolve_provider_model
+import skill_runs
+from providers import ProviderError, build_chat_model, skill_generator
 
 try:
     import memory
@@ -46,9 +48,28 @@ class SkillError(RuntimeError):
     """Raised when a skill-build phase cannot run (missing deps/keys/context)."""
 
 
+class _Meter:
+    """Accumulates token usage across the phases of one build (observability)."""
+
+    def __init__(self):
+        self.tokens = 0
+
+    def add(self, msg) -> None:
+        try:
+            from skill_runtime import usage_of
+            self.tokens += usage_of(msg)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 # --- shared LLM plumbing -----------------------------------------------------
 def _resolve_model(provider, model, *, temperature: float = 0.2, max_tokens: int = 2600):
-    rp, rm = resolve_provider_model(provider, model)
+    """Resolve and build the skill-generation chat model.
+
+    Prefers the latest Claude (``providers.skill_generator``) so skills and their
+    SKILL.md are authored by the strongest available model, honoring an explicit
+    provider/model override."""
+    rp, rm = skill_generator(provider, model)
     if not rp:
         raise SkillError(
             "No LLM provider is configured. Set one of ANTHROPIC_API_KEY / "
@@ -60,8 +81,10 @@ def _resolve_model(provider, model, *, temperature: float = 0.2, max_tokens: int
         raise SkillError(str(exc)) from exc
 
 
-def _gen(model, prompt: str) -> str:
+def _gen(model, prompt: str, meter: _Meter | None = None) -> str:
     msg = model.invoke(prompt)
+    if meter is not None:
+        meter.add(msg)
     content = getattr(msg, "content", msg)
     if isinstance(content, list):
         return "\n".join(c.get("text", "") for c in content if isinstance(c, dict))
@@ -194,11 +217,11 @@ Return ONLY JSON:
 "gaps": ["<something the context does NOT cover that a skill should not assume>", ...]}}"""
 
 
-def understand(bundle: dict, *, chat) -> dict:
+def understand(bundle: dict, *, chat, meter: _Meter | None = None) -> dict:
     prompt = _UNDERSTAND_PROMPT.format(
         memory=_memory_preamble(bundle["provenance"].get("context_digest", "")[:300]),
         context=bundle["context"])
-    data = _parse_json(_gen(chat, prompt))
+    data = _parse_json(_gen(chat, prompt, meter))
     return {
         "domain": str(data.get("domain", "")).strip(),
         "summary": str(data.get("summary", "")).strip(),
@@ -237,7 +260,7 @@ Return ONLY JSON:
 "risks": ["<a failure mode to guard against>", ...]}}"""
 
 
-def analyze(bundle: dict, understanding: dict, *, chat, goal: str = "") -> dict:
+def analyze(bundle: dict, understanding: dict, *, chat, goal: str = "", meter: _Meter | None = None) -> dict:
     goal_line = (f"The user asked specifically for: \"{goal.strip()}\". Design that skill if the "
                  f"context supports it." if goal and goal.strip()
                  else "Pick the single most useful skill the context can support.")
@@ -245,7 +268,7 @@ def analyze(bundle: dict, understanding: dict, *, chat, goal: str = "") -> dict:
         goal=goal_line,
         understanding=json.dumps(understanding, ensure_ascii=False),
         context=bundle["context"])
-    data = _parse_json(_gen(chat, prompt))
+    data = _parse_json(_gen(chat, prompt, meter))
     crit = data.get("success_criteria") or {}
     return {
         "name": str(data.get("name", "")).strip(),
@@ -289,14 +312,7 @@ Return ONLY JSON:
 {{"prompt": "<a request the skill should NOT handle>", "should_trigger": false, "expect": "<why it should defer>"}}]}}"""
 
 
-def codeact(bundle: dict, spec: dict, *, chat, revision_note: str = "") -> dict:
-    revision = (f"A human reviewer asked for changes — address this in the rewrite: "
-                f"\"{revision_note.strip()}\"." if revision_note and revision_note.strip() else "")
-    prompt = _CODEACT_PROMPT.format(
-        revision=revision,
-        spec=json.dumps(spec, ensure_ascii=False),
-        context=bundle["context"])
-    data = _parse_json(_gen(chat, prompt))
+def _normalize_artifact(data: dict, spec: dict) -> dict:
     crit = data.get("success_criteria") or spec.get("success_criteria") or {}
     tests = [t for t in (data.get("tests") or []) if isinstance(t, dict) and t.get("prompt")]
     return {
@@ -313,16 +329,100 @@ def codeact(bundle: dict, spec: dict, *, chat, revision_note: str = "") -> dict:
     }
 
 
+def _revision_line(revision_note: str) -> str:
+    return (f"A human reviewer asked for changes — address this in the rewrite: "
+            f"\"{revision_note.strip()}\"." if revision_note and revision_note.strip() else "")
+
+
+def codeact(bundle: dict, spec: dict, *, chat, revision_note: str = "", meter: _Meter | None = None) -> dict:
+    prompt = _CODEACT_PROMPT.format(
+        revision=_revision_line(revision_note),
+        spec=json.dumps(spec, ensure_ascii=False),
+        context=bundle["context"])
+    return _normalize_artifact(_parse_json(_gen(chat, prompt, meter)), spec)
+
+
+# The tool-using author: it may read context, recall memory, list existing skills,
+# and—crucially—check its own draft (test → measure → refine) before finalizing.
+_CODEACT_TOOLS_SYSTEM = """You are the SKILL AUTHOR (CodeAct) with tools. Write one ready-to-use agent
+skill, grounded ONLY in the provided context. You have tools: read_context (pull
+source passages), list_existing_skills (avoid duplicates), recall_memory (reuse
+learnings), and check_draft (run the deterministic checks on a candidate).
+
+Work iteratively: draft the skill, call check_draft on it, FIX every reported
+failure, and only then return the final skill. The skill must have a clear name +
+one-sentence description, instructions with >= 2 explicit numbered steps, at least
+one trigger and one anti-trigger, declared tools, and a test set with at least one
+positive (should_trigger true) and one negative (should_trigger false) case. No
+placeholders (TODO/TBD/<...>).
+
+When done, return ONLY the final skill as a JSON object with keys: name,
+description, instructions, steps, triggers, anti_triggers, tools, success_criteria
+{outcome, process, style, efficiency}, tests [{prompt, should_trigger, expect}]."""
+
+
+def codeact_tooluse(bundle: dict, spec: dict, *, chat, revision_note: str = "",
+                    meter: _Meter | None = None) -> tuple[dict, int]:
+    """Author the skill with a tool-use loop (returns artifact + tool-call count)."""
+    import skill_runtime
+    user = (f"{_revision_line(revision_note)}\n\nSKILL SPEC:\n{json.dumps(spec, ensure_ascii=False)}"
+            f"\n\nSELECTED CONTEXT (ground everything here):\n{bundle['context']}")
+    loop = skill_runtime.run_tool_loop(
+        chat, skill_runtime.builder_tools(bundle), _CODEACT_TOOLS_SYSTEM, user, max_iters=6)
+    if meter is not None:
+        meter.tokens += loop.get("tokens", 0)
+    artifact = _normalize_artifact(_parse_json(loop.get("text", "")), spec)
+    return artifact, loop.get("tool_calls", 0)
+
+
 # --- orchestration -----------------------------------------------------------
+def _timed(fn):
+    """Run ``fn`` and return (result, elapsed_ms)."""
+    t0 = time.perf_counter()
+    out = fn()
+    return out, int((time.perf_counter() - t0) * 1000)
+
+
 def _build_from_bundle(bundle: dict, *, provider, model, goal: str = "",
                        revision_note: str = "", where_id: str | None = None,
-                       run_rubric: bool = True, judge_provider=None, judge_model=None) -> dict:
+                       run_rubric: bool = True, run_triggering: bool = True,
+                       use_tools: bool = True, kind: str = "build",
+                       judge_provider=None, judge_model=None) -> dict:
     chat, rp, rm = _resolve_model(provider, model)
+    wall0 = time.perf_counter()
+    phases: dict = {}
 
-    understanding = understand(bundle, chat=chat)
-    spec = analyze(bundle, understanding, chat=chat, goal=goal)
-    artifact = codeact(bundle, spec, chat=chat, revision_note=revision_note)
+    mu = _Meter()
+    understanding, ms = _timed(lambda: understand(bundle, chat=chat, meter=mu))
+    phases["understand"] = {"ms": ms, "tokens": mu.tokens}
+
+    ma = _Meter()
+    spec, ms = _timed(lambda: analyze(bundle, understanding, chat=chat, goal=goal, meter=ma))
+    phases["analyze"] = {"ms": ms, "tokens": ma.tokens}
+
+    # codeact: a tool-using author (read context, recall, check its own draft) when
+    # the model supports tool calls; otherwise a single grounded completion.
+    mc = _Meter()
+    tools_used = 0
+    tool_mode = bool(use_tools and hasattr(chat, "bind_tools"))
+    if tool_mode:
+        (artifact, tools_used), ms = _timed(
+            lambda: codeact_tooluse(bundle, spec, chat=chat, revision_note=revision_note, meter=mc))
+        if not (artifact.get("instructions") and artifact.get("name")):
+            # Tool loop produced nothing usable -> fall back to the one-shot author.
+            tool_mode = False
+            artifact, ms2 = _timed(lambda: codeact(bundle, spec, chat=chat,
+                                                   revision_note=revision_note, meter=mc))
+            ms += ms2
+    else:
+        artifact, ms = _timed(lambda: codeact(bundle, spec, chat=chat,
+                                              revision_note=revision_note, meter=mc))
+    phases["codeact"] = {"ms": ms, "tokens": mc.tokens, "tool_calls": tools_used,
+                         "tool_mode": tool_mode}
+
     if not artifact.get("instructions") or not artifact.get("name"):
+        skill_runs.record(kind=kind, provider=rp, model=rm, ok=False,
+                          error="author produced no usable skill", phases=phases)
         raise SkillError("The author phase did not produce a usable skill (empty instructions/name).")
 
     artifact["provenance"] = bundle["provenance"]
@@ -332,19 +432,41 @@ def _build_from_bundle(bundle: dict, *, provider, model, goal: str = "",
     if not skill:
         raise SkillError("Could not store the drafted skill.")
     skill_id = skill["id"]
-    skills.append_history(skill_id, "build", "drafted",
-                          note=f"{rp}/{rm} · {spec.get('name', '')}")
+    skills.append_history(skill_id, kind, "drafted",
+                          note=f"{rp}/{rm}{' +tools' if tool_mode else ''} · {spec.get('name', '')}")
+    # Generate the SKILL.md on disk now (data/skills/<slug>/SKILL.md), so the
+    # portable artifact exists from the draft, not only after acceptance.
+    skills.export_skill(skill_id)
 
     # eval → gate → record (advances status to pending_review or rejected)
-    report = skill_eval.run_eval(skill, provider=rp, model=rm, run_rubric=run_rubric,
-                                 judge_provider=judge_provider, judge_model=judge_model)
+    report, eval_ms = _timed(lambda: skill_eval.run_eval(
+        skill, provider=rp, model=rm, run_rubric=run_rubric, run_triggering=run_triggering,
+        judge_provider=judge_provider, judge_model=judge_model))
+    phases["eval"] = {"ms": eval_ms}
     skill = skills.record_eval(skill_id, report)
 
+    duration_ms = int((time.perf_counter() - wall0) * 1000)
+    total_tokens = mu.tokens + ma.tokens + mc.tokens
+    trig = report.get("triggering") or {}
+    metrics = {
+        "deterministic_ratio": report["deterministic"]["ratio"],
+        "rubric_mean": report.get("rubric_mean"),
+        "trigger_precision": trig.get("precision"),
+        "trigger_recall": trig.get("recall"),
+        "trigger_f1": trig.get("f1"),
+    }
+    # Observability: log this build as a measured run (the 'measure' of the loop).
+    skill_runs.record(kind=kind, skill_id=skill_id, skill_name=skill["name"],
+                      provider=rp, model=rm, gate=report["gate"], status=skill["status"],
+                      duration_ms=duration_ms, tokens=total_tokens, tools_used=tools_used,
+                      phases=phases, metrics=metrics)
+
+    # Memory partnership (Hermes step 4-6): record the experience as a durable note.
     _remember_safe(
-        f"Built agent skill '{artifact['name']}' from {len(bundle['provenance'].get('chunk_ids', []))} "
-        f"context chunk(s); eval gate = {report['gate']}.",
+        f"{'Refined' if kind == 'refine' else 'Built'} agent skill '{artifact['name']}' from "
+        f"{len(bundle['provenance'].get('chunk_ids', []))} context chunk(s); eval gate = {report['gate']}.",
         kind="observation", salience=2, origin="skill_agent",
-        confidence="EXTRACTED", tags=["skill", "build"])
+        confidence="EXTRACTED", tags=["skill", kind])
 
     return {
         "ok": True,
@@ -353,6 +475,8 @@ def _build_from_bundle(bundle: dict, *, provider, model, goal: str = "",
         "status": skill["status"],
         "gate": report["gate"],
         "phases": {"understand": understanding, "analyze": spec, "codeact": artifact},
+        "observability": {"duration_ms": duration_ms, "tokens": total_tokens,
+                          "tools_used": tools_used, "tool_mode": tool_mode, "timings": phases},
         "eval": report,
         "provider": rp,
         "model": rm,
@@ -361,20 +485,25 @@ def _build_from_bundle(bundle: dict, *, provider, model, goal: str = "",
 
 def build_skill(*, chunk_ids=None, text=None, query=None, tags=None, where="overall",
                 goal: str = "", provider="auto", model=None, run_rubric: bool = True,
+                run_triggering: bool = True, use_tools: bool = True,
                 judge_provider=None, judge_model=None) -> dict:
     """Run the full pipeline: gather → understand → analyze → codeact → eval → gate.
 
-    The skill is drafted, evaluated, and gated; on a passing gate it lands in
-    ``pending_review`` for human alignment (it is NOT auto-accepted). Returns every
-    phase's output plus the eval report and the resulting skill record."""
+    With ``use_tools`` (default) the author may read context, recall memory, and
+    check its own draft before finalizing (test → measure → refine). The skill is
+    drafted, evaluated, gated, and its SKILL.md written; on a passing gate it lands
+    in ``pending_review`` for human alignment (it is NOT auto-accepted). Returns
+    every phase's output, the eval report, and an observability summary."""
     bundle = gather_context(chunk_ids=chunk_ids, text=text, query=query, tags=tags, where=where)
     return _build_from_bundle(bundle, provider=provider, model=model, goal=goal,
-                              run_rubric=run_rubric, judge_provider=judge_provider,
+                              run_rubric=run_rubric, run_triggering=run_triggering,
+                              use_tools=use_tools, judge_provider=judge_provider,
                               judge_model=judge_model)
 
 
 def rebuild_skill(skill_id: str, *, provider="auto", model=None, extra_guidance: str = "",
-                  run_rubric: bool = True, judge_provider=None, judge_model=None) -> dict:
+                  run_rubric: bool = True, run_triggering: bool = True, use_tools: bool = True,
+                  judge_provider=None, judge_model=None, kind: str = "build") -> dict:
     """Re-run the pipeline for an existing skill, folding the human's revision notes
     (and any ``extra_guidance``) into a fresh ``codeact`` pass — the loop closer.
 
@@ -390,8 +519,45 @@ def rebuild_skill(skill_id: str, *, provider="auto", model=None, extra_guidance:
                             where="overall")
     return _build_from_bundle(bundle, provider=provider, model=model,
                               revision_note=note, where_id=skill["id"],
-                              run_rubric=run_rubric, judge_provider=judge_provider,
-                              judge_model=judge_model)
+                              run_rubric=run_rubric, run_triggering=run_triggering,
+                              use_tools=use_tools, judge_provider=judge_provider,
+                              judge_model=judge_model, kind=kind)
+
+
+def _refine_guidance(skill: dict) -> str:
+    """Turn a skill's last eval into concrete 'fix this' guidance (the refine input)."""
+    ev = skill.get("eval") or {}
+    parts = []
+    failures = (ev.get("deterministic") or {}).get("failures") or []
+    if failures:
+        parts.append("Fix these failed checks: " + ", ".join(failures) + ".")
+    trig = ev.get("triggering") or {}
+    if trig.get("precision") is not None and trig["precision"] < 0.99:
+        parts.append("Tighten the description/anti-triggers to reduce false positives "
+                     f"(precision {trig['precision']}).")
+    if trig.get("recall") is not None and trig["recall"] < 0.99:
+        parts.append("Broaden the description/triggers so positive cases fire "
+                     f"(recall {trig['recall']}).")
+    rub = ev.get("rubric") or {}
+    weakest = None
+    if isinstance(rub.get("per_dimension"), dict) and rub["per_dimension"]:
+        weakest = min(rub["per_dimension"], key=rub["per_dimension"].get)
+        parts.append(f"Strengthen the weakest rubric dimension: {weakest}.")
+    return " ".join(parts) or "Improve clarity, grounding, and step specificity."
+
+
+def refine_skill(skill_id: str, *, provider="auto", model=None, run_rubric: bool = True,
+                 run_triggering: bool = True, use_tools: bool = True) -> dict:
+    """Self-improvement pass: read the skill's measured weaknesses (failed checks,
+    triggering precision/recall, weakest rubric dimension) and rebuild it to address
+    them — the test → measure → refine loop, logged as a ``refine`` run."""
+    skill = skills.get_skill(skill_id)
+    if not skill:
+        raise SkillError(f"No skill with id {skill_id!r}.")
+    guidance = _refine_guidance(skill)
+    return rebuild_skill(skill_id, provider=provider, model=model, extra_guidance=guidance,
+                         run_rubric=run_rubric, run_triggering=run_triggering,
+                         use_tools=use_tools, kind="refine")
 
 
 # --- human-in-the-loop alignment --------------------------------------------
@@ -413,8 +579,13 @@ def review_skill(skill_id: str, *, decision: str, score: float | None = None,
 
     result = {"ok": True, "skill": updated, "decision": decision.strip().lower(),
               "status": updated["status"]}
+    skill_runs.record(kind="review", skill_id=skill_id, skill_name=updated.get("name", ""),
+                      status=updated["status"], gate=(skill.get("eval") or {}).get("gate"),
+                      metrics={"human_score": (updated.get("human") or {}).get("score"),
+                               "aligned_with_gate": (updated.get("human") or {}).get("aligned_with_gate")})
     if updated["status"] == skills.ACCEPTED:
-        skills.export_skill(skill_id)  # write SKILL.md to disk
+        skills.export_skill(skill_id)  # write/refresh SKILL.md to disk
+        # Memory partnership: a durable fact so the agent auto-loads this skill later.
         _remember_safe(f"Accepted agent skill '{updated['name']}': {updated['description']}",
                        kind="fact", salience=3, origin="skill_review",
                        confidence="USER", tags=["skill", "accepted"])

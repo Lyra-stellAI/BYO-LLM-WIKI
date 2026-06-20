@@ -17,6 +17,7 @@ PROVIDERS: dict[str, dict] = {
         "env_key": "ANTHROPIC_API_KEY",
         "default_model": "claude-haiku-4-5-20251001",
         "models": [
+            "claude-opus-4-8",
             "claude-haiku-4-5-20251001",
             "claude-sonnet-4-6",
             "claude-opus-4-7",
@@ -92,6 +93,29 @@ def resolve_provider_model(provider: str | None, model: str | None) -> tuple[str
         return None, ""
     chosen_model = (model or "").strip() or PROVIDERS[provider]["default_model"]
     return provider, chosen_model
+
+
+# The skill-build pipeline prefers the strongest available Claude model to author
+# skills and SKILL.md (skills are high-leverage and worth the best generator), with
+# an env override. Falls back to whatever provider is configured when no Anthropic
+# key is set.
+SKILL_GENERATOR_MODEL = os.environ.get("SKILL_GENERATOR_MODEL", "claude-opus-4-8")
+
+
+def skill_generator(provider: str | None = "auto", model: str | None = None) -> tuple[str | None, str]:
+    """Resolve the (provider, model) used to GENERATE skills.
+
+    An explicit, non-auto provider/model is honored as-is. Otherwise, prefer
+    Anthropic's latest Claude (``SKILL_GENERATOR_MODEL``) when ``ANTHROPIC_API_KEY``
+    is set, else fall back to the usual auto resolution."""
+    p = (provider or "auto").strip().lower()
+    if p not in ("auto", "", "extractive"):
+        return resolve_provider_model(provider, model)
+    if model:  # explicit model with auto provider -> normal resolution
+        return resolve_provider_model(provider, model)
+    if provider_configured("anthropic"):
+        return "anthropic", SKILL_GENERATOR_MODEL
+    return resolve_provider_model("auto", None)
 
 
 # Each provider here is a distinct model family; an LLM judge should not share the

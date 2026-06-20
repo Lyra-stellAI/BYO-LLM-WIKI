@@ -14,10 +14,15 @@ import tempfile
 os.environ["KG_DATA_DIR"] = tempfile.mkdtemp(prefix="skill_test_")
 os.environ.pop("OPENAI_API_KEY", None)
 
+import json  # noqa: E402
+
 import knowledge_graph as kg  # noqa: E402
 import skill_library as sk  # noqa: E402
 import skill_eval  # noqa: E402
 import skill_agent  # noqa: E402
+import skill_runs  # noqa: E402
+import skill_runtime  # noqa: E402
+import providers  # noqa: E402
 
 
 def _good_skill_spec():
@@ -47,6 +52,7 @@ def _good_skill_spec():
 
 def setup_function(_=None):
     sk.clear()
+    skill_runs.clear()
     kg.clear("current")
     kg.clear("overall")
 
@@ -204,6 +210,119 @@ def test_gather_context_requires_something():
     except skill_agent.SkillError:
         return
     raise AssertionError("expected SkillError for empty context")
+
+
+# --- observability store -----------------------------------------------------
+def test_runs_record_and_benchmark():
+    skill_runs.clear()
+    skill_runs.record(kind="build", skill_id="skill_a", skill_name="A", provider="anthropic",
+                      model="claude-opus-4-8", gate="accept", status="pending_review",
+                      duration_ms=1200, tokens=900,
+                      metrics={"deterministic_ratio": 1.0, "rubric_mean": 0.8, "trigger_f1": 1.0})
+    skill_runs.record(kind="build", skill_id="skill_b", skill_name="B", provider="openai",
+                      model="gpt", gate="reject", status="rejected", duration_ms=800, tokens=500,
+                      metrics={"deterministic_ratio": 0.6, "rubric_mean": 0.3})
+    bench = skill_runs.benchmark()
+    assert bench["total_runs"] == 2 and bench["builds"] == 2
+    assert bench["gate_pass_rate"] == 0.5  # 1 of 2 accepted
+    assert bench["total_tokens"] == 1400
+    assert bench["gate_distribution"] == {"accept": 1, "reject": 1}
+    rows = skill_runs.list_runs(skill_id="skill_a")
+    assert len(rows) == 1 and rows[0]["model"] == "claude-opus-4-8"
+
+
+# --- latest-Claude generator preference --------------------------------------
+def test_skill_generator_prefers_claude():
+    saved = {k: os.environ.get(k) for k in
+             ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")}
+    try:
+        os.environ["ANTHROPIC_API_KEY"] = "x"
+        os.environ.pop("OPENAI_API_KEY", None)
+        assert providers.skill_generator("auto", None) == ("anthropic", providers.SKILL_GENERATOR_MODEL)
+        # explicit provider is honored as-is
+        assert providers.skill_generator("openai", "gpt-4o")[0] == "openai"
+        # no anthropic key -> falls back to whatever is configured
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        os.environ["OPENAI_API_KEY"] = "y"
+        assert providers.skill_generator("auto", None)[0] == "openai"
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# --- triggering eval (false positive / negative) -----------------------------
+class _FakeTriggerChat:
+    """Returns trigger=true only when the USER REQUEST mentions a changelog."""
+    def invoke(self, prompt):
+        import re as _re
+        m = _re.search(r'User request: "(.*?)"', prompt, _re.DOTALL)
+        request = (m.group(1) if m else prompt).lower()
+        return json.dumps({"trigger": "changelog" in request})
+
+
+def test_trigger_eval_precision_recall():
+    saved = (skill_eval.build_chat_model, skill_eval.resolve_provider_model)
+    skill_eval.build_chat_model = lambda *a, **k: _FakeTriggerChat()
+    skill_eval.resolve_provider_model = lambda p, m: ("openai", "gpt-test")
+    try:
+        out = skill_eval.run_trigger_eval(_good_skill_spec())
+        assert out["precision"] == 1.0 and out["recall"] == 1.0 and out["f1"] == 1.0
+        assert out["tp"] == 1 and out["tn"] == 1 and out["fp"] == 0 and out["fn"] == 0
+    finally:
+        skill_eval.build_chat_model, skill_eval.resolve_provider_model = saved
+
+
+# --- tool-use author loop ----------------------------------------------------
+class _FakeToolChat:
+    """Calls check_draft once, then returns the final skill JSON."""
+    def __init__(self):
+        self.calls = 0
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        from langchain_core.messages import AIMessage
+        self.calls += 1
+        if self.calls == 1:
+            draft = {k: _good_skill_spec()[k] for k in
+                     ("name", "description", "instructions", "steps", "triggers",
+                      "anti_triggers", "tools", "tests")}
+            return AIMessage(content="", tool_calls=[
+                {"name": "check_draft", "args": {"draft_json": json.dumps(draft)}, "id": "c1"}])
+        return AIMessage(content=json.dumps(_good_skill_spec()))
+
+
+def test_tool_loop_uses_tools_and_returns_skill():
+    bundle = {"context": "v2.0 added X, fixed Y. The changelog lists features.",
+              "provenance": {"chunk_ids": ["c1"], "source_titles": ["Changelog"]}}
+    tools = skill_runtime.builder_tools(bundle)
+    assert {t.name for t in tools} >= {"read_context", "check_draft", "list_existing_skills", "recall_memory"}
+    out = skill_runtime.run_tool_loop(_FakeToolChat(), tools, "system", "user", max_iters=4)
+    assert out["tool_calls"] == 1
+    parsed = json.loads(out["text"])
+    assert parsed["name"] == "Draft Release Notes"
+
+
+def test_check_draft_tool_reports_failures():
+    bundle = {"context": "ctx", "provenance": {"chunk_ids": ["c1"]}}
+    tools = {t.name: t for t in skill_runtime.builder_tools(bundle)}
+    bad = json.dumps({"name": "X", "description": "too short", "instructions": "hi"})
+    res = json.loads(tools["check_draft"].invoke({"draft_json": bad}))
+    assert "has_steps" in res["failures"] and res["fix"]
+
+
+# --- refine guidance ---------------------------------------------------------
+def test_refine_guidance_from_eval():
+    skill = _good_skill_spec()
+    skill["eval"] = {"deterministic": {"failures": ["has_anti_triggers"]},
+                     "triggering": {"precision": 0.5, "recall": 1.0},
+                     "rubric": {"per_dimension": {"style": 0.4, "outcome": 0.9}}}
+    g = skill_agent._refine_guidance(skill)
+    assert "has_anti_triggers" in g and "false positives" in g and "style" in g
 
 
 def _run_all():

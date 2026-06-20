@@ -407,6 +407,7 @@
         </div>
         <div class="ingest-actions">
           <button id="skillBuildBtn" class="btn btn-accent">Build skill →</button>
+          <label class="rag-toggle" style="margin-left:10px"><input type="checkbox" id="skillTools" checked /> use tools</label>
           <label class="rag-toggle" style="margin-left:10px"><input type="checkbox" id="skillRubric" checked /> rubric panel</label>
           <div id="skillBuildProg" class="ingest-progress"></div>
         </div>
@@ -420,6 +421,20 @@
         <div class="kg-stat"><span id="skillRevision">0</span> needs revision</div>
         <div class="kg-stat"><span id="skillRejected">0</span> rejected</div>
         <div class="kg-stat"><span id="skillAlign">—</span></div>
+      </div>
+
+      <div class="kg-granularity">
+        <span class="field-label">Observability</span>
+        <span id="skillObsStatus" class="provider-status">build / eval / refine metrics</span>
+        <button id="skillObsRefresh" class="btn btn-secondary btn-sm">Refresh</button>
+      </div>
+      <div class="kg-summary">
+        <div class="kg-stat"><span id="obsBuilds">0</span> builds</div>
+        <div class="kg-stat"><span id="obsPass">—</span> gate pass-rate</div>
+        <div class="kg-stat"><span id="obsRubric">—</span> avg rubric</div>
+        <div class="kg-stat"><span id="obsTokens">—</span> avg tokens</div>
+        <div class="kg-stat"><span id="obsLatency">—</span> avg ms</div>
+        <div class="kg-stat"><span id="obsTotalTokens">0</span> total tokens</div>
       </div>
 
       <div class="kg-granularity">
