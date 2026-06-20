@@ -584,6 +584,48 @@ def test_graph_async_job_runs_to_review():
         skill_graph.reset()
 
 
+# --- Postgres checkpointer (env-gated, SQLite fallback) ----------------------
+def test_pg_conninfo_and_schema():
+    import skill_graph
+    keys = ("SKILL_GRAPH_DB_URL", "SUPABASE_DB_URL", "SKILL_GRAPH_PG_SCHEMA")
+    saved = {k: os.environ.get(k) for k in keys}
+    try:
+        for k in keys:
+            os.environ.pop(k, None)
+        assert skill_graph._pg_conninfo() is None
+        os.environ["SUPABASE_DB_URL"] = "postgresql://supabase/x"
+        assert skill_graph._pg_conninfo() == "postgresql://supabase/x"
+        os.environ["SKILL_GRAPH_DB_URL"] = "postgresql://own/y"
+        assert skill_graph._pg_conninfo() == "postgresql://own/y"      # own var wins
+        assert skill_graph._pg_schema() == "skill_graph"               # default
+        os.environ["SKILL_GRAPH_PG_SCHEMA"] = "my-schema; drop"
+        assert skill_graph._pg_schema() == "myschemadrop"              # sanitized identifier
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+
+
+def test_postgres_checkpointer_falls_back_to_sqlite():
+    import skill_graph
+    keys = ("SKILL_GRAPH_CHECKPOINT", "SKILL_GRAPH_DB_URL", "SUPABASE_DB_URL")
+    saved = {k: os.environ.get(k) for k in keys}
+    try:
+        os.environ["SKILL_GRAPH_CHECKPOINT"] = "postgres"
+        os.environ.pop("SKILL_GRAPH_DB_URL", None)
+        os.environ.pop("SUPABASE_DB_URL", None)
+        skill_graph.reset()
+        saver = skill_graph._checkpointer()
+        assert type(saver).__name__ == "SqliteSaver"                   # graceful fallback
+        assert skill_graph._effective_checkpoint == "sqlite"
+        st = skill_graph.checkpoint_status()
+        assert st["requested"] == "postgres" and st["effective"] == "sqlite"
+        assert st["postgres_url_set"] is False
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        skill_graph.reset()
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]

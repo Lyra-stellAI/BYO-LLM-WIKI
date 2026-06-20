@@ -642,6 +642,11 @@ def main(argv=None) -> int:
         if not cc["available"]:
             print("  → install the Claude Code CLI (npm i -g @anthropic-ai/claude-code) and authenticate it,")
             print("    or set CLAUDE_CODE_BIN, to use --backend claude_code.")
+        try:
+            import skill_graph
+            print("checkpoint   :", _json.dumps(skill_graph.checkpoint_status()))
+        except Exception as exc:  # noqa: BLE001
+            print(f"checkpoint   : (langgraph unavailable: {exc})")
         return 0
 
     if args.mode == "skill-export":

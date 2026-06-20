@@ -587,7 +587,7 @@ def api_skill_backends():
     """Which skill-generation backends are available: the in-process pipeline and
     the Claude Code CLI subprocess agent."""
     import skill_agent, skill_claude_agent
-    return jsonify({
+    payload = {
         "default": skill_agent.DEFAULT_BACKEND,
         "backends": {
             "pipeline": {"name": "pipeline", "available": bool(first_available_provider()),
@@ -595,7 +595,13 @@ def api_skill_backends():
             "claude_code": {**skill_claude_agent.status(),
                             "label": "Claude Code CLI (tool-using subprocess agent)"},
         },
-    })
+    }
+    try:
+        import skill_graph
+        payload["checkpoint"] = skill_graph.checkpoint_status()
+    except Exception:  # noqa: BLE001
+        payload["checkpoint"] = None
+    return jsonify(payload)
 
 
 @app.route("/api/skill/runs")

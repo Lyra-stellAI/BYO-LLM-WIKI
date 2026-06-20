@@ -18,8 +18,11 @@ langchain-openai>=0.3.0
 # without it; install to use the graph backend (/api/skill/graph/*, skill-graph-*).
 langgraph>=1.0.0
 langgraph-checkpoint-sqlite>=2.0.0
-# Postgres checkpoints (SKILL_GRAPH_CHECKPOINT=postgres, e.g. Supabase):
+# Postgres checkpoints (SKILL_GRAPH_CHECKPOINT=postgres, e.g. Supabase) — durable,
+# shared, cross-machine pause/resume. Falls back to SQLite if these are missing:
 # langgraph-checkpoint-postgres>=2.0.0
+# psycopg[binary]>=3.2.0
+# psycopg-pool>=3.2.0
 
 # Contextual retrieval / vector library (Library Q&A tab, rag-* CLI modes).
 # Embeddings use the OpenAI API; hnswlib provides the HNSW index (numpy fallback).
