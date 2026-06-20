@@ -264,7 +264,28 @@ templates committed under `eval/`.
   (`eval/rag_eval_dataset_crossdoc.json`) whose questions each **require
   synthesizing across 2-3 documents** (`outputs.expected_urls` lists the required
   sources), scored on **retrieval_recall** / **retrieval_any_hit**, RAGAS, and an
-  LLM-judged **synthesis correctness**.
+  LLM-judged **synthesis correctness**. The synthesis judge is graded against
+  **evidence, not its own priors**: each judge sees (a) excerpts of the gold
+  source documents and (b) a gold **`key_points`** reference for the question, so
+  "well-grounded" becomes checkable instead of a guess from the title/URL alone.
+
+### Human-in-the-loop calibration
+
+An LLM judge with no reference silently grades on its own world-knowledge and
+style, so the same answer can swing ~0.4 across judge families. The cross-doc eval
+closes the loop with **human labels** (`eval/crossdoc_human_labels.json`): each
+entry holds the gold `key_points` (the reference the judge grades against), a
+human `human_score` for a `reviewed_answer`, and notes. The run reports
+**`judge_alignment`** — how closely each LLM judge tracks the human (`alignment =
+1 − MAE`, plus `within_0.2`), over *fresh* pairs only; an answer that no longer
+matches its `reviewed_answer` is flagged **stale → re-review**. This surfaces
+which judges to trust and turns reviewer corrections into reusable references —
+the human-judgment step of the agent-improvement loop.
+
+```bash
+python runner.py --mode rag-crossdoc-labels   # draft key_points; human fills human_score
+python runner.py --mode rag-crossdoc          # runs the eval + prints judge_alignment
+```
 
 ### Judge ≠ generator family
 
@@ -361,7 +382,10 @@ shows the active project when enabled.
 - `POST /api/rag/ragas` — `{ "rerank?", "k?", "provider?", "model?" }` runs RAGAS
   metrics as a LangSmith experiment.
 - `POST /api/rag/crossdoc` — `{ "rerank?", "mmr?", "k?", "ragas?", "provider?", "model?", "judge_provider?", "judge_model?" }`
-  builds/syncs the cross-document dataset and runs a multi-source experiment.
+  builds/syncs the cross-document dataset and runs a multi-source experiment
+  (returns `judge_alignment` when human labels are present).
+- `POST /api/rag/crossdoc/labels` — `{ "provider?", "model?", "overwrite?" }`
+  drafts `key_points` into `eval/crossdoc_human_labels.json` for a human to score.
 
 ## Configuration
 

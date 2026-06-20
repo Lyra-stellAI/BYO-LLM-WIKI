@@ -110,8 +110,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Local knowledge library agent (deepagents harness).")
     p.add_argument("--mode", required=True, choices=[
         "init", "ingest", "query", "lint", "rag-ingest", "rag-ask", "rag-eval",
-        "rag-experiment", "rag-dataset", "rag-ragas", "rag-crossdoc", "kg-extract",
+        "rag-experiment", "rag-dataset", "rag-ragas", "rag-crossdoc",
+        "rag-crossdoc-labels", "kg-extract",
         "memory-list", "memory-recall", "memory-add", "memory-forget"])
+    p.add_argument("--overwrite", action="store_true",
+                   help="rag-crossdoc-labels: redraft key_points for already-labeled questions too")
     p.add_argument("--rerank", action=argparse.BooleanOptionalAction, default=True,
                    help="Enable the LLM re-ranker for RAG retrieval (default: on; use --no-rerank to disable)")
     p.add_argument("--mmr", action=argparse.BooleanOptionalAction, default=False,
@@ -299,6 +302,20 @@ def main(argv=None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         print(_json.dumps(res, indent=2))
+        return 0
+
+    if args.mode == "rag-crossdoc-labels":
+        import crossdoc, json as _json
+        try:
+            res = crossdoc.scaffold_human_labels(provider=args.provider, model=args.model,
+                                                 overwrite=args.overwrite)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"Seeded key_points into {res['path']}")
+        print(f"  labeled={res['labeled']}  added={res['added']}  needs_review={res['needs_review']}")
+        print("Next: open the file and fill in human_score (0-1) + reviewed_answer for each entry,")
+        print("then re-run `--mode rag-crossdoc` to see judge↔human alignment.")
         return 0
 
     if args.mode == "rag-ragas":

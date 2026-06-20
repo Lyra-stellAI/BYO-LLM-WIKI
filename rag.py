@@ -121,8 +121,15 @@ def _format_context(hits: list[dict]) -> str:
 
 
 _RAG_PROMPT = """Answer the question using the context passages from the user's
-knowledge library. Cite the passages you use inline as [n]. If the answer is not
-in the context, say so plainly — do not invent facts.
+knowledge library. Ground every claim in the passages and cite them inline as [n].
+
+The question may require SYNTHESIS — connecting, comparing, or combining facts
+spread across several passages that no single passage states together. That is
+expected: reason over the passages and draw the connections they jointly support,
+as long as each step stays grounded in their content. Do not invent facts or rely
+on outside knowledge. Only say the answer is not in the context when the passages
+genuinely lack the information needed — not merely because no single passage
+states the connection explicitly.
 {memory}
 Question: {question}
 

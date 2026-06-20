@@ -588,6 +588,21 @@ def api_rag_crossdoc():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/rag/crossdoc/labels", methods=["POST"])
+def api_rag_crossdoc_labels():
+    """Seed the human-label file with LLM-drafted key_points for every cross-doc
+    question (a human then fills in human_score + reviewed_answer to calibrate the judges)."""
+    data = request.get_json(silent=True) or {}
+    provider = (data.get("provider") or "auto").strip().lower()
+    model = (data.get("model") or "").strip()
+    overwrite = bool(data.get("overwrite", False))
+    try:
+        import crossdoc
+        return jsonify(crossdoc.scaffold_human_labels(provider=provider, model=model, overwrite=overwrite))
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/rag/ragas", methods=["POST"])
 def api_rag_ragas():
     """Run a RAGAS evaluation (faithfulness/answer-relevancy/context-precision) as a
