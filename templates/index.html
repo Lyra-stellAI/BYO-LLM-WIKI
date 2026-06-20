@@ -3,36 +3,46 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Codex · Build your own knowledge wiki</title>
-  <meta name="description" content="Build your own knowledge wiki from the web — search and summarize pages, grow a layered knowledge graph, ask grounded questions, and keep it all in a cross-session memory." />
+  <title>Knowledge Library · Build your own, from the web</title>
+  <meta name="description" content="Build your own knowledge library from the web — search and summarize pages, grow a layered knowledge graph, ask grounded questions, and keep it all in a cross-session memory." />
   <script>
     (function () {
       try {
-        document.documentElement.setAttribute("data-theme", localStorage.getItem("wiki-theme") || "dark");
+        document.documentElement.setAttribute("data-theme", localStorage.getItem("wiki-theme") || "light");
       } catch (e) {
-        document.documentElement.setAttribute("data-theme", "dark");
+        document.documentElement.setAttribute("data-theme", "light");
       }
     })();
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Nunito:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
 </head>
 <body>
   <div class="topbar">
     <div class="topbar-inner">
       <header class="brand-row">
-        <a class="brand" href="/" aria-label="Codex — build your own knowledge wiki">
+        <a class="brand" href="/" aria-label="Knowledge Library — build your own">
           <span class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 5.5A1.5 1.5 0 0 1 4.5 4H10a2 2 0 0 1 2 2 2 2 0 0 1 2-2h5.5A1.5 1.5 0 0 1 21 5.5V18a1 1 0 0 1-1 1h-6a2 2 0 0 0-2 2 2 2 0 0 0-2-2H4a1 1 0 0 1-1-1z"/>
-              <path d="M12 6v15"/>
+            <svg viewBox="0 0 32 32" fill="none">
+              <path d="M8.4 9.2C7.6 7 8.3 4.8 9.8 4c.3 1.7.6 3.5.8 5.4z" fill="#2f7d77"/>
+              <path d="M23.6 9.2c.8-2.2.1-4.4-1.4-5.2-.3 1.7-.6 3.5-.8 5.4z" fill="#2f7d77"/>
+              <ellipse cx="16" cy="17" rx="11" ry="12" fill="#34857d"/>
+              <ellipse cx="16" cy="20.5" rx="6.4" ry="7.5" fill="#f3e3c2"/>
+              <circle cx="11.7" cy="14.6" r="4.3" fill="#fbf4e6"/>
+              <circle cx="20.3" cy="14.6" r="4.3" fill="#fbf4e6"/>
+              <circle cx="11.7" cy="14.6" r="4.3" stroke="#e0894d" stroke-width="1.3"/>
+              <circle cx="20.3" cy="14.6" r="4.3" stroke="#e0894d" stroke-width="1.3"/>
+              <path d="M15.7 14.5h.6" stroke="#e0894d" stroke-width="1.3" stroke-linecap="round"/>
+              <circle cx="11.9" cy="14.7" r="1.7" fill="#22413e"/>
+              <circle cx="20.1" cy="14.7" r="1.7" fill="#22413e"/>
+              <path d="M16 16.7l-1.7 2.3h3.4z" fill="#e0894d"/>
             </svg>
           </span>
           <span class="brand-text">
-            <span class="brand-name">Codex</span>
-            <span class="brand-tag">Build your own knowledge wiki</span>
+            <span class="brand-eyebrow">Build your own</span>
+            <span class="brand-name">Knowledge Library</span>
           </span>
         </a>
         <div class="header-actions">
@@ -351,7 +361,7 @@
   </main>
 
   <footer class="site-footer">
-    <span>Codex — your personal knowledge wiki. It grows from what you read and remembers across sessions.</span>
+    <span>Build your own knowledge library — it grows from what you read and remembers across sessions.</span>
     <span>Runs locally · <a href="https://github.com/Lyra-stellAI/BYO-Library" target="_blank" rel="noopener noreferrer">GitHub</a></span>
   </footer>
 
