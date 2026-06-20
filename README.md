@@ -1,4 +1,4 @@
-# Knowledge Library Agent
+# Build Your Own Knowledge Library Agent
 <img width="1408" height="768" alt="Gemini_Generated_Image_qkb760qkb760qkb7" src="https://github.com/user-attachments/assets/f63e43bb-b635-4ecc-8ddf-78102f99975c" />
 
 Build **your own knowledge library** from the web. Search and summarize pages,
