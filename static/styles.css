@@ -1,73 +1,73 @@
 /* ============================================================================
    Knowledge Library — build your own, from the web
-   Hogwarts-library design system: engraved display (Cinzel) + EB Garamond body,
-   aged-parchment / ink / antique-gold / oxblood palette, a parchment light
-   theme (default) and a candlelit dark library via [data-theme].
+   Library design system: engraved display (Cinzel) + EB Garamond body,
+   warm parchment / teal / terracotta palette, a light "paper" theme (default)
+   and a cozy dark library via [data-theme].
    All class/id hooks used by app.js / kg.js / rag.js / memory.js are preserved.
    ========================================================================== */
 
 /* --- Theme tokens ---------------------------------------------------------- */
-/* Default = aged-parchment library (light). A candlelit dark library is opt-in. */
+/* Default = warm "paper library" (light) — the chosen teal/terracotta template. */
 :root,
 :root[data-theme="light"] {
-  --bg: #e7d9ba;            /* aged parchment */
-  --bg-tint-1: rgba(184, 134, 11, 0.12);    /* candle gold */
-  --bg-tint-2: rgba(110, 31, 36, 0.06);     /* faint oxblood */
-  --surface: #f4ead0;
-  --surface-2: #e8d8b3;
-  --surface-3: #ddcaa0;
-  --border: #cdb588;
-  --border-strong: #b89c6a;
-  --text: #2c2113;          /* sepia ink */
-  --text-strong: #1b1408;
-  --muted: #6f5d3e;
-  --faint: #927d57;
-  --accent: #6e1f24;        /* oxblood / burgundy */
-  --accent-2: #9a7420;      /* antique bronze */
-  --on-accent: #f6ead0;
-  --on-accent-2: #f6ead0;
-  --gold: #b8860b;          /* decorative gilt */
-  --success: #2f6f4f;       /* deep emerald */
-  --warn: #9a6b16;
-  --error: #8a2b22;
-  --ring: rgba(110, 31, 36, 0.26);
-  --header-bg: rgba(231, 217, 186, 0.86);
-  --graph-bg: #15110a;      /* graph canvas stays dark for legibility */
-  --code-bg: #e9dcbd;
-  --shadow-sm: 0 1px 2px rgba(60, 44, 16, 0.10);
-  --shadow: 0 16px 34px -20px rgba(60, 44, 16, 0.34);
-  --shadow-lg: 0 30px 64px -28px rgba(60, 44, 16, 0.40);
+  --bg: #f3e8cf;
+  --bg-tint-1: rgba(217, 130, 74, 0.13);   /* terracotta warmth */
+  --bg-tint-2: rgba(47, 125, 119, 0.10);   /* teal */
+  --surface: #fffaef;
+  --surface-2: #f6ecd5;
+  --surface-3: #efe1c3;
+  --border: #e8d8b5;
+  --border-strong: #d7c193;
+  --text: #3a4540;
+  --text-strong: #1f3a36;
+  --muted: #897f5f;
+  --faint: #aa9f7c;
+  --accent: #2b736d;       /* teal */
+  --accent-2: #c4673a;     /* terracotta */
+  --on-accent: #fff9ee;
+  --on-accent-2: #fff9ee;
+  --gold: #b07d2a;         /* warm metallic accent (used sparingly) */
+  --success: #5a8f3c;      /* sage */
+  --warn: #b9802a;
+  --error: #c0553c;
+  --ring: rgba(43, 115, 109, 0.28);
+  --header-bg: rgba(243, 232, 207, 0.85);
+  --graph-bg: #16211f;     /* graph canvas stays dark for legibility */
+  --code-bg: #f1e6cc;
+  --shadow-sm: 0 1px 2px rgba(90, 66, 30, 0.07);
+  --shadow: 0 14px 32px -18px rgba(96, 70, 35, 0.30);
+  --shadow-lg: 0 28px 60px -26px rgba(96, 70, 35, 0.36);
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --bg: #0f0b06;            /* candlelit Hogwarts library at night */
-  --bg-tint-1: rgba(212, 175, 55, 0.12);    /* candle gold */
-  --bg-tint-2: rgba(123, 31, 36, 0.10);     /* oxblood */
-  --surface: #1b140c;
-  --surface-2: #251c11;
-  --surface-3: #322713;
-  --border: #3a2c1a;
-  --border-strong: #503d24;
-  --text: #ece0c6;          /* parchment text */
-  --text-strong: #fbf2da;
-  --muted: #b09a72;
-  --faint: #897759;
-  --accent: #c8a44d;        /* antique gold */
-  --accent-2: #b6505a;      /* burgundy rose */
-  --on-accent: #1c1408;
-  --on-accent-2: #1c1208;
-  --gold: #d4af37;
-  --success: #74b083;
-  --warn: #d9b25a;
-  --error: #e0726a;
-  --ring: rgba(200, 164, 77, 0.36);
-  --header-bg: rgba(15, 11, 6, 0.82);
-  --graph-bg: #0f0b06;
-  --code-bg: #251c11;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
-  --shadow: 0 16px 36px -16px rgba(0, 0, 0, 0.66);
-  --shadow-lg: 0 30px 64px -24px rgba(0, 0, 0, 0.72);
+  --bg: #17120d;           /* cozy night library / espresso */
+  --bg-tint-1: rgba(224, 145, 90, 0.12);
+  --bg-tint-2: rgba(77, 179, 166, 0.10);
+  --surface: #211a13;
+  --surface-2: #2b231a;
+  --surface-3: #372d20;
+  --border: #3b3023;
+  --border-strong: #50412f;
+  --text: #efe6d3;
+  --text-strong: #fcf5e6;
+  --muted: #b4a584;
+  --faint: #897c60;
+  --accent: #4db3a6;       /* teal */
+  --accent-2: #e0915a;     /* terracotta */
+  --on-accent: #181109;
+  --on-accent-2: #181109;
+  --gold: #caa24a;
+  --success: #84c264;
+  --warn: #e3b257;
+  --error: #ec7a5e;
+  --ring: rgba(77, 179, 166, 0.38);
+  --header-bg: rgba(23, 18, 13, 0.80);
+  --graph-bg: #112019;
+  --code-bg: #2b231a;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow: 0 14px 34px -16px rgba(0, 0, 0, 0.60);
+  --shadow-lg: 0 28px 62px -24px rgba(0, 0, 0, 0.66);
   color-scheme: dark;
 }
 
@@ -136,7 +136,7 @@ a:hover { text-decoration: underline; }
   backdrop-filter: saturate(140%) blur(14px);
   -webkit-backdrop-filter: saturate(140%) blur(14px);
   border-bottom: 1px solid var(--border);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--gold) 35%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .topbar-inner {
   max-width: var(--maxw);
@@ -234,8 +234,8 @@ a:hover { text-decoration: underline; }
 }
 .tab svg { width: 16px; height: 16px; opacity: 0.85; }
 .tab:hover { color: var(--text); }
-.tab.active { color: var(--text-strong); border-bottom-color: var(--gold); }
-.tab.active svg { opacity: 1; color: var(--gold); }
+.tab.active { color: var(--text-strong); border-bottom-color: var(--accent); }
+.tab.active svg { opacity: 1; color: var(--accent); }
 
 .tab-count {
   background: var(--accent-2);
@@ -524,7 +524,7 @@ kbd {
 .kg-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .kg-graph {
   background:
-    radial-gradient(120% 120% at 50% 0%, rgba(212, 175, 55, 0.16), transparent 60%),
+    radial-gradient(120% 120% at 50% 0%, rgba(77, 179, 166, 0.14), transparent 60%),
     var(--graph-bg);
   border: 1px solid var(--border); border-radius: var(--r-lg); height: 500px; overflow: hidden;
 }
