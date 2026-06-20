@@ -1,0 +1,151 @@
+"""Tests for the search bar's link context-extraction (app.py · POST /api/search).
+
+The search bar must, given a *link*, fetch the page and extract its readable
+context — not run a keyword web search on the URL string (which returns unrelated
+hits, e.g. an arXiv link surfacing a stray Facebook post). The offline tests
+monkeypatch the network so they're deterministic everywhere; the live test at the
+bottom fetches the three reference links from the task and asserts real context
+comes back. The live test skips automatically when there's no network.
+
+Run directly (``python test_search.py``) or under pytest.
+"""
+
+import os
+import sys
+import tempfile
+
+# Isolate state BEFORE importing app: throwaway data dir + no model keys so the
+# import path stays offline and deterministic.
+os.environ.setdefault("KG_DATA_DIR", tempfile.mkdtemp(prefix="search_test_"))
+os.environ.pop("OPENAI_API_KEY", None)
+os.environ.pop("ANTHROPIC_API_KEY", None)
+
+import app  # noqa: E402
+
+# The three reference links from the task, each with a few keywords we expect to
+# appear in the extracted context (case-insensitive).
+LINKS = [
+    ("https://arxiv.org/abs/2509.02547",
+     ("reinforcement learning", "survey", "agentic")),
+    ("https://verl.readthedocs.io/en/latest/sglang_multiturn/search_tool_example.html",
+     ("search tool", "verl")),
+    ("https://www.langchain.com/blog/choosing-the-right-multi-agent-architecture",
+     ("multi-agent", "architecture")),
+]
+
+
+def _client():
+    return app.app.test_client()
+
+
+def _skip(msg):
+    """Skip under pytest; print + return when run directly (no pytest dependency)."""
+    if "pytest" in sys.modules:
+        import pytest
+        pytest.skip(msg)
+    print(f"  SKIP  {msg}")
+
+
+# --- offline routing tests (monkeypatched, deterministic everywhere) --------
+
+def test_link_query_extracts_context():
+    """A URL routes to fetch + extract context — web_search is never called."""
+    orig_fetch, orig_search = app.fetch_page, app.web_search
+    app.fetch_page = lambda url: {"title": "Example Title", "url": url,
+                                  "text": "Alpha beta gamma delta. " * 80}
+
+    def _no_search(*a, **k):
+        raise AssertionError("web_search must not run for a URL")
+    app.web_search = _no_search
+    try:
+        r = _client().post("/api/search", json={"query": "https://example.com/page"})
+        data = r.get_json()
+        assert r.status_code == 200, data
+        assert data["kind"] == "link", data
+        assert len(data["results"]) == 1, data
+        res = data["results"][0]
+        assert res["url"] == "https://example.com/page"
+        assert res["title"] == "Example Title"
+        assert res["chars"] > 500
+        assert "Alpha beta gamma" in res["context"]
+        assert res["snippet"]  # a short lead preview is present
+    finally:
+        app.fetch_page, app.web_search = orig_fetch, orig_search
+
+
+def test_keyword_query_uses_web_search():
+    """A non-URL still runs a keyword web search — fetch_page is never called."""
+    orig_fetch, orig_search = app.fetch_page, app.web_search
+    app.web_search = lambda q, max_results=8: [
+        {"title": "Hit", "url": "https://example.com", "snippet": "s"}]
+
+    def _no_fetch(url):
+        raise AssertionError("fetch_page must not run for a keyword query")
+    app.fetch_page = _no_fetch
+    try:
+        r = _client().post("/api/search", json={"query": "agentic rl survey"})
+        data = r.get_json()
+        assert r.status_code == 200, data
+        assert data["kind"] == "web", data
+        assert data["results"][0]["title"] == "Hit"
+    finally:
+        app.fetch_page, app.web_search = orig_fetch, orig_search
+
+
+def test_empty_query_rejected():
+    r = _client().post("/api/search", json={"query": "   "})
+    assert r.status_code == 400
+
+
+def test_fetch_error_reports_cleanly():
+    """A network failure while fetching a link returns a clean 502, not a 500."""
+    import requests
+    orig_fetch = app.fetch_page
+
+    def _boom(url):
+        raise requests.ConnectionError("no route to host")
+    app.fetch_page = _boom
+    try:
+        r = _client().post("/api/search", json={"query": "https://example.com/page"})
+        data = r.get_json()
+        assert r.status_code == 502, data
+        assert "Could not fetch link" in data["error"]
+    finally:
+        app.fetch_page = orig_fetch
+
+
+# --- live test against the three reference links ----------------------------
+
+def test_live_links_extract_context():
+    """End-to-end: each reference link yields real extracted context."""
+    client = _client()
+    for url, keywords in LINKS:
+        r = client.post("/api/search", json={"query": url})
+        data = r.get_json()
+        # No network in this environment? Skip rather than fail.
+        if r.status_code == 502 and "fetch link" in (data.get("error") or "").lower():
+            _skip(f"network unavailable: {data.get('error')}")
+            return
+        assert r.status_code == 200, data
+        assert data["kind"] == "link", data
+        assert len(data["results"]) == 1, data
+        res = data["results"][0]
+        assert res["url"] == url
+        assert res["chars"] > 500, f"too little context from {url}: {res['chars']} chars"
+        haystack = (res["title"] + " " + res["context"]).lower()
+        assert any(k in haystack for k in keywords), \
+            f"none of {keywords} found in context from {url}"
+        print(f"  link ok  {res['chars']:>6} chars · {res['title'][:60]}")
+
+
+def _run_all():
+    fns = [v for k, v in sorted(globals().items())
+           if k.startswith("test_") and callable(v)]
+    for fn in fns:
+        fn()
+        print(f"  ok  {fn.__name__}")
+    print(f"\n{len(fns)} search tests passed.")
+
+
+if __name__ == "__main__":
+    _run_all()

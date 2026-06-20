@@ -206,15 +206,51 @@ def api_providers():
     })
 
 
+def extract_link_context(url: str) -> dict:
+    """Fetch a link and return its extracted readable context.
+
+    Shaped like a single search result (``title``/``url``/``snippet``) so the
+    front-end can render it with the same card, plus the full ``context`` text
+    and a ``chars`` count for downstream summarize / + KG actions.
+    """
+    page = fetch_page(url)
+    text = page["text"]
+    lead = text[:280].strip()
+    if len(text) > len(lead):
+        lead = lead.rsplit(" ", 1)[0] + "…"
+    return {
+        "title": page["title"],
+        "url": page["url"],
+        "snippet": lead,
+        "context": text,
+        "chars": len(text),
+    }
+
+
 @app.route("/api/search", methods=["POST"])
 def api_search():
     data = request.get_json(silent=True) or {}
     query = (data.get("query") or "").strip()
     if not query:
         return jsonify({"error": "Query is required."}), 400
+
+    # If the input is a link, fetch it and extract its context instead of running
+    # a keyword web search (a URL makes a poor search term — it returns unrelated
+    # hits rather than the content of the page the user actually pointed at).
+    if is_valid_url(query):
+        try:
+            result = extract_link_context(query)
+            return jsonify({"query": query, "kind": "link", "results": [result]})
+        except requests.HTTPError as e:
+            return jsonify({"error": f"Could not fetch link: HTTP {e.response.status_code}"}), 502
+        except requests.RequestException as e:
+            return jsonify({"error": f"Could not fetch link: {e}"}), 502
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"error": f"Could not extract context from link: {e}"}), 500
+
     try:
         results = web_search(query)
-        return jsonify({"query": query, "results": results})
+        return jsonify({"query": query, "kind": "web", "results": results})
     except Exception as e:
         return jsonify({"error": f"Search failed: {e}"}), 500
 
