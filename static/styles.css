@@ -170,6 +170,9 @@ a:hover { text-decoration: underline; }
   flex: 0 0 auto;
 }
 .brand-mark svg { width: 32px; height: 32px; }
+/* When a custom logo image (static/owl.png etc.) is supplied, show it instead. */
+.brand-mark--img { background: var(--surface); border-color: var(--border); overflow: hidden; }
+.brand-img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 30%; border-radius: inherit; display: block; }
 .brand-text { display: flex; flex-direction: column; line-height: 1.05; }
 .brand-eyebrow {
   font-family: var(--sans);

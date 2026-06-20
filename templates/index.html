@@ -24,7 +24,10 @@
     <div class="topbar-inner">
       <header class="brand-row">
         <a class="brand" href="/" aria-label="Knowledge Library — build your own">
-          <span class="brand-mark" aria-hidden="true">
+          <span class="brand-mark {% if logo_url %}brand-mark--img{% endif %}" aria-hidden="true">
+            {% if logo_url %}
+            <img class="brand-img" src="{{ logo_url }}" alt="" />
+            {% else %}
             <!-- snowy messenger owl carrying a sealed letter (owl post) -->
             <svg viewBox="0 0 32 32" fill="none">
               <ellipse cx="16" cy="14.2" rx="8.4" ry="9.4" fill="#f1ebdc"/>
@@ -46,6 +49,7 @@
               <path d="M12.6 22.8 16 25.3l3.4-2.5" stroke="#b98a2f" stroke-width="0.5"/>
               <circle cx="16" cy="25.6" r="1" fill="#7b1f24"/>
             </svg>
+            {% endif %}
           </span>
           <span class="brand-text">
             <span class="brand-eyebrow">Build your own</span>
