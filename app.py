@@ -10,6 +10,7 @@ import config
 import knowledge_graph as kg
 import ingestion
 import extraction
+import memory
 from providers import (
     PROVIDERS,
     agent_dependencies_available,
@@ -403,6 +404,78 @@ def api_agent_maintain():
         return jsonify({"error": str(e)}), 400
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": f"Maintenance failed: {e}"}), 500
+
+
+# --- Memory layer endpoints (cross-session recall + write-back) -------------
+@app.route("/api/memory/stats")
+def api_memory_stats():
+    return jsonify(memory.stats())
+
+
+@app.route("/api/memory/list")
+def api_memory_list():
+    kind = (request.args.get("kind") or "").strip() or None
+    try:
+        limit = int(request.args.get("limit") or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    return jsonify({"memories": memory.list_memories(kind=kind, limit=limit),
+                    "stats": memory.stats()})
+
+
+@app.route("/api/memory/recall", methods=["POST"])
+def api_memory_recall():
+    data = request.get_json(silent=True) or {}
+    query = (data.get("query") or data.get("question") or "").strip()
+    if not query:
+        return jsonify({"error": "A query is required."}), 400
+    try:
+        k = int(data.get("k") or 6)
+    except (TypeError, ValueError):
+        k = 6
+    kinds_in = data.get("kinds")
+    kinds = ([k.strip() for k in kinds_in.split(",") if k.strip()] if isinstance(kinds_in, str)
+             else kinds_in if isinstance(kinds_in, list) else None)
+    return jsonify({"query": query, "memories": memory.recall(query, k=k, kinds=kinds or None)})
+
+
+@app.route("/api/memory/add", methods=["POST"])
+def api_memory_add():
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    if len(text) < 3:
+        return jsonify({"error": "Memory text is required."}), 400
+    kind = (data.get("kind") or "fact").strip().lower()
+    try:
+        salience = int(data.get("salience") or 3)
+    except (TypeError, ValueError):
+        salience = 3
+    tags_in = data.get("tags")
+    tags = ([t.strip() for t in tags_in.split(",") if t.strip()] if isinstance(tags_in, str)
+            else [str(t).strip() for t in tags_in if str(t).strip()] if isinstance(tags_in, list)
+            else None)
+    rec = memory.remember(text, kind=kind, salience=salience, tags=tags,
+                          confidence="USER", origin="user",
+                          source_url=(data.get("source_url") or "").strip())
+    return jsonify({"ok": bool(rec), "memory": rec, "stats": memory.stats()})
+
+
+@app.route("/api/memory/feedback", methods=["POST"])
+def api_memory_feedback():
+    data = request.get_json(silent=True) or {}
+    rec = memory.record_feedback(
+        question=(data.get("question") or "").strip(),
+        answer=(data.get("answer") or "").strip(),
+        rating=(data.get("rating") or "").strip(),
+        correction=(data.get("correction") or "").strip(),
+        memory_id=(data.get("memory_id") or "").strip(),
+    )
+    return jsonify({"ok": bool(rec), "memory": rec, "stats": memory.stats()})
+
+
+@app.route("/api/memory/<mem_id>", methods=["DELETE"])
+def api_memory_delete(mem_id):
+    return jsonify({"removed": memory.forget(mem_id), "stats": memory.stats()})
 
 
 # --- RAG / contextual vector library endpoints ------------------------------

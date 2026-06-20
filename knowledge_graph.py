@@ -46,7 +46,10 @@ SCHEMA_VERSION = 2
 
 # Node layers / types ---------------------------------------------------------
 # source -> section (contextual summary) -> chunk -> entity -> topic -> synthesis
-LAYER_OF = {"source": 0, "section": 1, "chunk": 2, "entity": 3, "topic": 4, "synthesis": 5}
+# Layer 6 ("memory") is the cross-session learning layer; it lives in its own
+# store (see memory.py) rather than in these graph JSON files.
+LAYER_OF = {"source": 0, "section": 1, "chunk": 2, "entity": 3, "topic": 4,
+            "synthesis": 5, "memory": 6}
 
 ENTITY_KINDS = {
     "person", "organization", "place", "concept",

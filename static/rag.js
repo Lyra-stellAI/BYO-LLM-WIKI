@@ -102,7 +102,9 @@
           (c.preview ? `<div class="cite-prev">${esc(c.preview)}</div>` : "") + `</div>`).join("") + `</div>`;
       }
       const used = [res.provider, res.model].filter(Boolean).join(" · ");
-      if (used) html += `<div class="ask-foot">Answered by ${esc(used)}${res.mmr ? " · MMR" : ""}${res.reranked ? " · re-ranked" : ""}</div>`;
+      const memN = (res.memories_used || []).length;
+      const memNote = memN ? ` · recalled ${memN} ${memN === 1 ? "memory" : "memories"}` : "";
+      if (used) html += `<div class="ask-foot">Answered by ${esc(used)}${res.mmr ? " · MMR" : ""}${res.reranked ? " · re-ranked" : ""}${memNote}</div>`;
       show(html);
     } catch (e) { show(`<div style="color:var(--error)">${esc(e.message)}</div>`); }
     finally { askBtn.disabled = false; askBtn.textContent = prev; }

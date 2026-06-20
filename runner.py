@@ -9,12 +9,19 @@ knowledge library instead of syncing to a hub. Modes:
     query   answer a question grounded in the library, with citations
     lint    whole-library maintenance pass (dedupe, topics, syntheses)
 
+    memory-list / memory-recall / memory-add / memory-forget
+            inspect and edit the cross-session memory layer (what the library
+            has learned, durable answers, preferences, gaps, corrections)
+
 Examples:
     python runner.py --mode init
     python runner.py --mode ingest --source notes/ada.md --source notes/refs/
     python runner.py --mode ingest --url https://example.com/article
     python runner.py --mode query --question "What did Ada contribute?"
     python runner.py --mode lint
+    python runner.py --mode memory-add --text "User is researching agent memory." --kind preference
+    python runner.py --mode memory-recall --question "agent memory"
+    python runner.py --mode memory-list
 """
 
 from __future__ import annotations
@@ -103,7 +110,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Local knowledge library agent (deepagents harness).")
     p.add_argument("--mode", required=True, choices=[
         "init", "ingest", "query", "lint", "rag-ingest", "rag-ask", "rag-eval",
-        "rag-experiment", "rag-dataset", "rag-ragas", "rag-crossdoc", "kg-extract"])
+        "rag-experiment", "rag-dataset", "rag-ragas", "rag-crossdoc", "kg-extract",
+        "memory-list", "memory-recall", "memory-add", "memory-forget"])
     p.add_argument("--rerank", action=argparse.BooleanOptionalAction, default=True,
                    help="Enable the LLM re-ranker for RAG retrieval (default: on; use --no-rerank to disable)")
     p.add_argument("--mmr", action=argparse.BooleanOptionalAction, default=False,
@@ -116,7 +124,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--url", action="append", default=[], help="URL to fetch and ingest (repeatable)")
     p.add_argument("--text", default=None, help="Raw text to ingest")
     p.add_argument("--title", default=None, help="Source title for --text")
-    p.add_argument("--question", default=None, help="Question for query mode")
+    p.add_argument("--question", default=None, help="Question for query / memory-recall mode")
+    p.add_argument("--kind", default=None,
+                   help="memory kind: fact|answer|preference|gap|correction|observation")
+    p.add_argument("--salience", type=int, default=3, help="memory salience 1-5 (memory-add)")
+    p.add_argument("--id", dest="mem_id", default=None, help="memory id (memory-forget)")
     p.add_argument("--provider", default="auto",
                    help="auto|anthropic|openai|qwen|deepseek|gemini|mistral")
     p.add_argument("--model", default=None, help="Model id override")
@@ -313,6 +325,51 @@ def main(argv=None) -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"error: {exc}", file=sys.stderr)
             return 1
+        return 0
+
+    if args.mode == "memory-list":
+        import memory, json as _json
+        print(_json.dumps(memory.stats(), indent=2))
+        rows = memory.list_memories(kind=args.kind, limit=200)
+        print(f"\n--- {len(rows)} memories ---")
+        for r in rows:
+            print(f"  [{r['kind']:<11}] s{r['salience']} ×{r.get('use_count', 0):<2} "
+                  f"{r['id']}  {r['preview']}")
+        return 0
+
+    if args.mode == "memory-recall":
+        if not args.question:
+            print("error: --question is required for memory-recall", file=sys.stderr)
+            return 2
+        import memory
+        rows = memory.recall(args.question, k=10,
+                             kinds=[args.kind] if args.kind else None)
+        if not rows:
+            print("(no relevant memories)")
+            return 0
+        for r in rows:
+            print(f"  [{r['kind']}] score={r['score']} sim={r['similarity']}  {r['text']}")
+        return 0
+
+    if args.mode == "memory-add":
+        if not args.text:
+            print("error: --text is required for memory-add", file=sys.stderr)
+            return 2
+        import memory
+        rec = memory.remember(args.text, kind=(args.kind or "fact"),
+                              salience=args.salience, confidence="USER", origin="cli")
+        if not rec:
+            print("error: nothing stored", file=sys.stderr)
+            return 1
+        print(f"Stored {rec['id']} [{rec['kind']}] salience={rec['salience']}")
+        return 0
+
+    if args.mode == "memory-forget":
+        if not args.mem_id:
+            print("error: --id is required for memory-forget", file=sys.stderr)
+            return 2
+        import memory
+        print("removed" if memory.forget(args.mem_id) else "not found")
         return 0
 
     return 2

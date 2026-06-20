@@ -12,6 +12,7 @@ import json
 import re
 
 import embeddings as emb
+import memory
 from providers import ProviderError, build_chat_model, resolve_provider_model, resolve_judge
 from vectorstore import VectorStore
 
@@ -119,10 +120,10 @@ def _format_context(hits: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
-_RAG_PROMPT = """Answer the question using ONLY the context passages from the user's
+_RAG_PROMPT = """Answer the question using the context passages from the user's
 knowledge library. Cite the passages you use inline as [n]. If the answer is not
 in the context, say so plainly — do not invent facts.
-
+{memory}
 Question: {question}
 
 Context passages:
@@ -137,12 +138,25 @@ Respond in markdown:
 """
 
 
-def _answer_from_hits(question: str, hits: list[dict], rp: str, rm: str) -> str:
+def _answer_gist(text: str, n: int = 400) -> str:
+    """Leading prose of an answer (headings, blank lines and the trailing
+    sources/citations section stripped) — used as the stored memory text."""
+    body = re.split(r"\n#{1,6}\s*(?:Key sources|Citations|Sources)\b",
+                    text or "", maxsplit=1, flags=re.I)[0]
+    lines = [ln.strip() for ln in body.splitlines()
+             if ln.strip() and not ln.strip().startswith("#")]
+    return " ".join(lines)[:n].strip()
+
+
+def _answer_from_hits(question: str, hits: list[dict], rp: str, rm: str,
+                      memory_section: str = "") -> str:
     try:
         chat = build_chat_model(rp, rm, max_tokens=1200)
     except ProviderError as exc:
         raise RagError(str(exc)) from exc
-    return _gen(chat, _RAG_PROMPT.format(question=question.strip(), context=_format_context(hits)))
+    return _gen(chat, _RAG_PROMPT.format(question=question.strip(),
+                                         context=_format_context(hits),
+                                         memory=memory_section))
 
 
 def answer_with_contexts(question: str, *, provider: str = "auto", model: str | None = None,
@@ -167,25 +181,54 @@ def answer_with_contexts(question: str, *, provider: str = "auto", model: str | 
 @traceable(name="rag.answer", tags=["rag", "qa", "knowledge-library"])
 def answer(question: str, *, provider: str = "auto", model: str | None = None,
            k: int = 6, vs_name: str = "library",
-           rerank_hits: bool = True, mmr: bool = False, mmr_lambda: float = 0.5) -> dict:
+           rerank_hits: bool = True, mmr: bool = False, mmr_lambda: float = 0.5,
+           use_memory: bool = True, write_back: bool = True) -> dict:
     if not question or not question.strip():
         raise RagError("A question is required.")
     rp, rm = resolve_provider_model(provider, model)
     if not rp:
         raise RagError("No LLM provider configured. Set an API key to use RAG Q&A.")
+
+    # Memory recall: fold prior learnings into the prompt as background context.
+    mems, memory_section = [], ""
+    if use_memory:
+        try:
+            mems = memory.recall(question, k=4)
+        except Exception:  # noqa: BLE001
+            mems = []
+        if mems:
+            memory_section = ("\nPrior library memory (background only — not "
+                              "citable; verify against the passages below):\n"
+                              + memory.format_memories(mems) + "\n")
+
     hits = retrieve(question, k=k, vs_name=vs_name,
                     rerank_hits=rerank_hits, mmr=mmr, mmr_lambda=mmr_lambda, provider=rp, model=rm)
     if not hits:
         return {"answer": "The knowledge library is empty — ingest some pages first.",
-                "citations": [], "provider": rp, "model": rm}
-    text = _answer_from_hits(question, hits, rp, rm)
+                "citations": [], "provider": rp, "model": rm, "memories_used": mems}
+    text = _answer_from_hits(question, hits, rp, rm, memory_section=memory_section)
     citations = [{
         "n": i + 1, "chunk_id": h["id"], "title": h.get("title"), "url": h.get("url"),
         "date": h.get("date"), "section_title": h.get("section_title"),
         "score": h.get("score"), "preview": h.get("preview"),
     } for i, h in enumerate(hits)]
+
+    # Write-back: reinforce used memories and file this answer for next time.
+    if write_back:
+        try:
+            if mems:
+                memory.bump_use([m["id"] for m in mems])
+            gist = _answer_gist(text)
+            if gist and "not in the context" not in text.lower():
+                memory.remember(f"Q: {question.strip()}\nA: {gist}", kind="answer",
+                                salience=2, origin="rag_ask", confidence="EXTRACTED",
+                                source_url=(citations[0]["url"] if citations else ""),
+                                tags=["rag"])
+        except Exception:  # noqa: BLE001  (write-back must never break an answer)
+            pass
+
     return {"answer": text, "citations": citations, "provider": rp, "model": rm,
-            "k": k, "reranked": rerank_hits, "mmr": mmr}
+            "k": k, "reranked": rerank_hits, "mmr": mmr, "memories_used": mems}
 
 
 # --- Evaluation --------------------------------------------------------------
@@ -266,7 +309,8 @@ def evaluate(eval_set: list[dict], *, provider: str = "auto", model: str | None 
         rr_sum += (1.0 / rank) if rank else 0.0
 
         ans = answer(q, provider=rp, model=rm, k=k, vs_name=vs_name,
-                     rerank_hits=rerank_hits, mmr=mmr, mmr_lambda=mmr_lambda)
+                     rerank_hits=rerank_hits, mmr=mmr, mmr_lambda=mmr_lambda,
+                     use_memory=False, write_back=False)
         score, reason = None, ""
         if judge is not None:
             raw = _gen(judge, _JUDGE_PROMPT.format(
