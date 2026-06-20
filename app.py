@@ -11,6 +11,7 @@ import knowledge_graph as kg
 import ingestion
 import extraction
 import memory
+import skill_library as skills
 from providers import (
     PROVIDERS,
     agent_dependencies_available,
@@ -528,6 +529,301 @@ def api_memory_feedback():
 @app.route("/api/memory/<mem_id>", methods=["DELETE"])
 def api_memory_delete(mem_id):
     return jsonify({"removed": memory.forget(mem_id), "stats": memory.stats()})
+
+
+# --- Agent-skill layer endpoints (build / eval / human review / library) ----
+@app.route("/api/skill/stats")
+def api_skill_stats():
+    return jsonify(skills.stats())
+
+
+@app.route("/api/skill/list")
+def api_skill_list():
+    status = (request.args.get("status") or "").strip() or None
+    try:
+        limit = int(request.args.get("limit") or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    return jsonify({"skills": skills.list_skills(status=status, limit=limit),
+                    "stats": skills.stats()})
+
+
+@app.route("/api/skill/pending")
+def api_skill_pending():
+    """The human-review queue: skills that passed the gate and await alignment."""
+    return jsonify({"skills": skills.pending_review(), "stats": skills.stats()})
+
+
+@app.route("/api/skill/observability")
+def api_skill_observability():
+    """Benchmark readout over logged runs: gate pass-rate, avg latency/tokens, etc."""
+    import skill_runs, skill_tracing
+    skill_id = (request.args.get("skill_id") or "").strip() or None
+    return jsonify({"benchmark": skill_runs.benchmark(skill_id=skill_id),
+                    "recent": skill_runs.list_runs(skill_id=skill_id, limit=20),
+                    "tracing": skill_tracing.status()})
+
+
+@app.route("/api/skill/tracing/init", methods=["POST"])
+def api_skill_tracing_init():
+    """Create the dedicated LangSmith project for skill runs (idempotent)."""
+    import skill_tracing
+    return jsonify({"ensure": skill_tracing.ensure_project(), "status": skill_tracing.status()})
+
+
+@app.route("/api/skill/backends")
+def api_skill_backends():
+    """Which skill-generation backends are available: the in-process pipeline and
+    the Claude Code CLI subprocess agent."""
+    import skill_agent, skill_claude_agent
+    return jsonify({
+        "default": skill_agent.DEFAULT_BACKEND,
+        "backends": {
+            "pipeline": {"name": "pipeline", "available": bool(first_available_provider()),
+                         "label": "In-process pipeline (LLM phases)"},
+            "claude_code": {**skill_claude_agent.status(),
+                            "label": "Claude Code CLI (tool-using subprocess agent)"},
+        },
+    })
+
+
+@app.route("/api/skill/runs")
+def api_skill_runs():
+    """Raw observability runs (build / eval / refine / review) with per-run metrics."""
+    import skill_runs
+    skill_id = (request.args.get("skill_id") or "").strip() or None
+    kind = (request.args.get("kind") or "").strip() or None
+    try:
+        limit = int(request.args.get("limit") or 50)
+    except (TypeError, ValueError):
+        limit = 50
+    return jsonify({"runs": skill_runs.list_runs(skill_id=skill_id, kind=kind, limit=limit)})
+
+
+@app.route("/api/skill/<skill_id>")
+def api_skill_get(skill_id):
+    s = skills.get_skill(skill_id)
+    if not s:
+        return jsonify({"error": "Skill not found."}), 404
+    return jsonify({"skill": s, "markdown": skills.to_skill_md(s)})
+
+
+@app.route("/api/skill/build", methods=["POST"])
+def api_skill_build():
+    """Run the build pipeline (understand → analyze → codeact → eval → gate) over
+    selected context, producing a drafted, evaluated, gated skill."""
+    data = request.get_json(silent=True) or {}
+    chunk_ids = data.get("chunk_ids") if isinstance(data.get("chunk_ids"), list) else None
+    text = (data.get("text") or "").strip() or None
+    query = (data.get("query") or "").strip() or None
+    tags_in = data.get("tags")
+    tags = ([t.strip() for t in tags_in.split(",") if t.strip()] if isinstance(tags_in, str)
+            else [str(t).strip() for t in tags_in if str(t).strip()] if isinstance(tags_in, list)
+            else None)
+    if not (chunk_ids or text or query or tags):
+        return jsonify({"error": "Provide context: chunk_ids, text, query, or tags."}), 400
+    try:
+        import skill_agent
+        res = skill_agent.build_skill(
+            chunk_ids=chunk_ids, text=text, query=query, tags=tags,
+            where=(data.get("where") or "overall"),
+            goal=(data.get("goal") or "").strip(),
+            provider=(data.get("provider") or "auto").strip().lower(),
+            model=(data.get("model") or "").strip() or None,
+            run_rubric=bool(data.get("run_rubric", True)),
+            run_triggering=bool(data.get("run_triggering", True)),
+            use_tools=bool(data.get("use_tools", True)),
+            backend=(data.get("backend") or "").strip().lower() or None,
+            judge_provider=(data.get("judge_provider") or "").strip().lower() or None,
+            judge_model=(data.get("judge_model") or "").strip() or None)
+        res["stats"] = skills.stats()
+        return jsonify(res)
+    except Exception as e:  # noqa: BLE001  (SkillError -> actionable 400)
+        return jsonify({"error": str(e)}), 400
+
+
+def _skill_graph_or_error():
+    try:
+        import skill_graph
+        return skill_graph, None
+    except Exception as e:  # noqa: BLE001
+        return None, (jsonify({"error": "LangGraph orchestration requires `langgraph` "
+                              f"(pip install langgraph langgraph-checkpoint-sqlite): {e}"}), 503)
+
+
+@app.route("/api/skill/graph/build", methods=["POST"])
+def api_skill_graph_build():
+    """Run the build as a checkpointed LangGraph StateGraph; pauses at human review."""
+    mod, err = _skill_graph_or_error()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    chunk_ids = data.get("chunk_ids") if isinstance(data.get("chunk_ids"), list) else None
+    tags_in = data.get("tags")
+    tags = ([t.strip() for t in tags_in.split(",") if t.strip()] if isinstance(tags_in, str)
+            else [str(t).strip() for t in tags_in if str(t).strip()] if isinstance(tags_in, list)
+            else None)
+    if not (chunk_ids or (data.get("text") or "").strip() or (data.get("query") or "").strip() or tags):
+        return jsonify({"error": "Provide context: chunk_ids, text, query, or tags."}), 400
+    try:
+        res = mod.run_build(
+            chunk_ids=chunk_ids, text=(data.get("text") or "").strip() or None,
+            query=(data.get("query") or "").strip() or None, tags=tags,
+            where=(data.get("where") or "overall"), goal=(data.get("goal") or "").strip(),
+            provider=(data.get("provider") or "auto").strip().lower(),
+            model=(data.get("model") or "").strip() or None,
+            backend=(data.get("backend") or "").strip().lower() or None,
+            use_tools=bool(data.get("use_tools", True)),
+            run_rubric=bool(data.get("run_rubric", True)),
+            run_triggering=bool(data.get("run_triggering", True)))
+        res["stats"] = skills.stats()
+        res["checkpoint"] = mod.checkpoint_backend()
+        return jsonify(res)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/skill/graph/resume", methods=["POST"])
+def api_skill_graph_resume():
+    """Resume a paused graph build with a human decision (accept | reject | revise)."""
+    mod, err = _skill_graph_or_error()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    thread_id = (data.get("thread_id") or "").strip()
+    decision = (data.get("decision") or "").strip().lower()
+    if not thread_id or decision not in {"accept", "reject", "revise"}:
+        return jsonify({"error": "thread_id and decision (accept|reject|revise) are required."}), 400
+    score = data.get("score")
+    try:
+        score = float(score) if score is not None and score != "" else None
+    except (TypeError, ValueError):
+        score = None
+    try:
+        res = mod.resume_review(thread_id, decision=decision, score=score,
+                                notes=(data.get("notes") or "").strip(),
+                                reviewer=(data.get("reviewer") or "user").strip())
+        res["stats"] = skills.stats()
+        return jsonify(res)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/skill/graph/status")
+def api_skill_graph_status():
+    mod, err = _skill_graph_or_error()
+    if err:
+        return err
+    thread_id = (request.args.get("thread_id") or "").strip()
+    if not thread_id:
+        return jsonify({"error": "thread_id is required."}), 400
+    try:
+        return jsonify(mod.get_status(thread_id))
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/skill/<skill_id>/eval", methods=["POST"])
+def api_skill_eval(skill_id):
+    """Re-run evaluation (deterministic checks + rubric panel) on an existing skill."""
+    s = skills.get_skill(skill_id)
+    if not s:
+        return jsonify({"error": "Skill not found."}), 404
+    data = request.get_json(silent=True) or {}
+    try:
+        import skill_eval, skill_runs
+        report = skill_eval.run_eval(
+            s, provider=(data.get("provider") or "auto").strip().lower(),
+            model=(data.get("model") or "").strip() or None,
+            run_rubric=bool(data.get("run_rubric", True)),
+            run_triggering=bool(data.get("run_triggering", True)),
+            judge_provider=(data.get("judge_provider") or "").strip().lower() or None,
+            judge_model=(data.get("judge_model") or "").strip() or None)
+        updated = skills.record_eval(skill_id, report)
+        trig = report.get("triggering") or {}
+        skill_runs.record(kind="eval", skill_id=skill_id, skill_name=s.get("name", ""),
+                          gate=report["gate"], status=updated["status"],
+                          metrics={"deterministic_ratio": report["deterministic"]["ratio"],
+                                   "rubric_mean": report.get("rubric_mean"),
+                                   "trigger_f1": trig.get("f1")})
+        return jsonify({"ok": True, "skill": updated, "eval": report, "stats": skills.stats()})
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/skill/<skill_id>/review", methods=["POST"])
+def api_skill_review(skill_id):
+    """Record a human's alignment decision (accept / reject / revise) — the
+    human-in-the-loop authority the automated gate defers to."""
+    data = request.get_json(silent=True) or {}
+    decision = (data.get("decision") or "").strip().lower()
+    if decision not in {"accept", "reject", "revise"}:
+        return jsonify({"error": "decision must be accept | reject | revise."}), 400
+    score = data.get("score")
+    try:
+        score = float(score) if score is not None and score != "" else None
+    except (TypeError, ValueError):
+        score = None
+    try:
+        import skill_agent
+        res = skill_agent.review_skill(
+            skill_id, decision=decision, score=score,
+            notes=(data.get("notes") or "").strip(),
+            reviewer=(data.get("reviewer") or "user").strip(),
+            rebuild_on_revise=bool(data.get("rebuild_on_revise", False)),
+            provider=(data.get("provider") or "auto").strip().lower(),
+            model=(data.get("model") or "").strip() or None)
+        res["stats"] = skills.stats()
+        return jsonify(res)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/skill/<skill_id>/rebuild", methods=["POST"])
+def api_skill_rebuild(skill_id):
+    """Re-run the pipeline for a skill, folding human revision notes into a new draft."""
+    data = request.get_json(silent=True) or {}
+    try:
+        import skill_agent
+        res = skill_agent.rebuild_skill(
+            skill_id, provider=(data.get("provider") or "auto").strip().lower(),
+            model=(data.get("model") or "").strip() or None,
+            extra_guidance=(data.get("extra_guidance") or "").strip(),
+            run_rubric=bool(data.get("run_rubric", True)))
+        res["stats"] = skills.stats()
+        return jsonify(res)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/skill/<skill_id>/refine", methods=["POST"])
+def api_skill_refine(skill_id):
+    """Self-improvement pass: rebuild the skill to fix its measured weaknesses
+    (failed checks, triggering precision/recall, weakest rubric dimension)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        import skill_agent
+        res = skill_agent.refine_skill(
+            skill_id, provider=(data.get("provider") or "auto").strip().lower(),
+            model=(data.get("model") or "").strip() or None,
+            use_tools=bool(data.get("use_tools", True)),
+            backend=(data.get("backend") or "").strip().lower() or None,
+            run_rubric=bool(data.get("run_rubric", True)),
+            run_triggering=bool(data.get("run_triggering", True)))
+        res["stats"] = skills.stats()
+        return jsonify(res)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/skill/<skill_id>/export", methods=["POST"])
+def api_skill_export(skill_id):
+    return jsonify(skills.export_skill(skill_id))
+
+
+@app.route("/api/skill/<skill_id>", methods=["DELETE"])
+def api_skill_delete(skill_id):
+    return jsonify({"removed": skills.forget(skill_id), "stats": skills.stats()})
 
 
 # --- RAG / contextual vector library endpoints ------------------------------

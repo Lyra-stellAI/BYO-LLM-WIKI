@@ -13,6 +13,14 @@ deepagents>=0.6.0
 langchain-anthropic>=1.0.0
 langchain-openai>=0.3.0
 
+# LangGraph orchestration of the skill-build loop: durable human-in-the-loop
+# (interrupt + checkpointer) and the refine cycle. The linear skill pipeline works
+# without it; install to use the graph backend (/api/skill/graph/*, skill-graph-*).
+langgraph>=1.0.0
+langgraph-checkpoint-sqlite>=2.0.0
+# Postgres checkpoints (SKILL_GRAPH_CHECKPOINT=postgres, e.g. Supabase):
+# langgraph-checkpoint-postgres>=2.0.0
+
 # Contextual retrieval / vector library (Library Q&A tab, rag-* CLI modes).
 # Embeddings use the OpenAI API; hnswlib provides the HNSW index (numpy fallback).
 numpy>=1.24.0
@@ -21,3 +29,15 @@ hnswlib>=0.8.0
 # Optional: RAGAS evaluation (rag-ragas / POST /api/rag/ragas). Heavy deps; only
 # needed to run RAGAS faithfulness/answer-relevancy/context-precision metrics.
 # ragas>=0.4.0
+
+# Optional: the `claude_code` skill-generation backend (SKILL_BACKEND=claude_code)
+# invokes the Claude Code CLI as a subprocess — install it separately and
+# authenticate it:  npm i -g @anthropic-ai/claude-code
+# The Python Agent SDK is detected if present (informational only):
+# claude-agent-sdk>=0.1.0
+
+# Skill-run tracing: LangSmith export uses `langsmith` (already pulled in by
+# langchain). OTel spans are optional and only needed if OTEL_EXPORTER_OTLP_ENDPOINT
+# is set:
+# opentelemetry-sdk>=1.27.0
+# opentelemetry-exporter-otlp-proto-http>=1.27.0
