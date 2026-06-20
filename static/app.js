@@ -274,3 +274,13 @@ saveSelectionBtn.addEventListener("click", () => {
   window.kg.openModal({ text: pendingSelection, source_title: title, source_url: link });
   hideSelectionMenu();
 });
+
+// --- Theme toggle (light / dark, persisted per browser) ---------------------
+const themeToggle = $("#themeToggle");
+if (themeToggle) {
+  themeToggle.addEventListener("click", () => {
+    const next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("wiki-theme", next); } catch (e) { /* ignore */ }
+  });
+}

@@ -3,22 +3,92 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Web Reading Assistant</title>
+  <title>Knowledge Library · Build your own, from the web</title>
+  <meta name="description" content="Build your own knowledge library from the web — search and summarize pages, grow a layered knowledge graph, ask grounded questions, and keep it all in a cross-session memory." />
+  <script>
+    (function () {
+      try {
+        document.documentElement.setAttribute("data-theme", localStorage.getItem("wiki-theme") || "light");
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "light");
+      }
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
 </head>
 <body>
-  <main class="container">
-    <header>
-      <h1>Web Reading Assistant</h1>
-      <p class="subtitle">Search, summarize, and grow a curated knowledge graph.</p>
-    </header>
+  <div class="topbar">
+    <div class="topbar-inner">
+      <header class="brand-row">
+        <a class="brand" href="/" aria-label="Knowledge Library — build your own">
+          <span class="brand-mark {% if logo_url %}brand-mark--img{% endif %}" aria-hidden="true">
+            {% if logo_url %}
+            <img class="brand-img" src="{{ logo_url }}" alt="" />
+            {% else %}
+            <!-- snowy messenger owl carrying a sealed letter (owl post) -->
+            <svg viewBox="0 0 32 32" fill="none">
+              <ellipse cx="16" cy="14.2" rx="8.4" ry="9.4" fill="#f1ebdc"/>
+              <path d="M7.8 14c-.3 4 1.1 7.3 3 8.3-1-2.8-1.3-5.7-1.1-8.6z" fill="#e3dac4"/>
+              <path d="M24.2 14c.3 4-1.1 7.3-3 8.3 1-2.8 1.3-5.7 1.1-8.6z" fill="#e3dac4"/>
+              <circle cx="11" cy="11.4" r="0.6" fill="#c9bda2"/>
+              <circle cx="21" cy="12" r="0.6" fill="#c9bda2"/>
+              <circle cx="12.4" cy="18.4" r="0.6" fill="#c9bda2"/>
+              <circle cx="19.6" cy="18.8" r="0.6" fill="#c9bda2"/>
+              <circle cx="16" cy="20.4" r="0.6" fill="#c9bda2"/>
+              <circle cx="12.6" cy="13.4" r="3" fill="#e6b73f"/>
+              <circle cx="19.4" cy="13.4" r="3" fill="#e6b73f"/>
+              <circle cx="12.6" cy="13.4" r="1.5" fill="#241a0c"/>
+              <circle cx="19.4" cy="13.4" r="1.5" fill="#241a0c"/>
+              <circle cx="13.3" cy="12.8" r="0.5" fill="#fff"/>
+              <circle cx="20.1" cy="12.8" r="0.5" fill="#fff"/>
+              <path d="M16 14.6l-1.3 1.9h2.6z" fill="#d6a93f"/>
+              <rect x="12.2" y="22.4" width="7.6" height="5.2" rx="0.8" fill="#f6efdd" stroke="#b98a2f" stroke-width="0.5"/>
+              <path d="M12.6 22.8 16 25.3l3.4-2.5" stroke="#b98a2f" stroke-width="0.5"/>
+              <circle cx="16" cy="25.6" r="1" fill="#7b1f24"/>
+            </svg>
+            {% endif %}
+          </span>
+          <span class="brand-text">
+            <span class="brand-eyebrow">Build your own</span>
+            <span class="brand-name">Knowledge Library</span>
+          </span>
+        </a>
+        <div class="header-actions">
+          <a class="icon-btn" href="https://github.com/Lyra-stellAI/BYO-WIKI" target="_blank" rel="noopener noreferrer" title="Source on GitHub" aria-label="Source on GitHub">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.34-1.3-1.7-1.3-1.7-1.06-.72.08-.71.08-.71 1.17.08 1.79 1.2 1.79 1.2 1.04 1.79 2.73 1.27 3.4.97.1-.76.41-1.27.74-1.56-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.12 3.05.74.81 1.18 1.84 1.18 3.1 0 4.42-2.69 5.39-5.25 5.68.42.36.8 1.08.8 2.18v3.23c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5z"/></svg>
+          </a>
+          <button id="themeToggle" class="icon-btn" type="button" title="Toggle light / dark" aria-label="Toggle light / dark theme">
+            <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.2 17.2 18.6 18.6M18.6 5.4 17.2 6.8M6.8 17.2 5.4 18.6"/></svg>
+            <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+          </button>
+        </div>
+      </header>
 
-    <nav class="tabs">
-      <button class="tab active" data-tab="read">Read</button>
-      <button class="tab" data-tab="kg">Knowledge Graph <span id="tabCount" class="tab-count hidden"></span></button>
-      <button class="tab" data-tab="rag">Library Q&amp;A</button>
-      <button class="tab" data-tab="memory">Memory <span id="memTabCount" class="tab-count hidden"></span></button>
-    </nav>
+      <nav class="tabs">
+        <button class="tab active" data-tab="read">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h7a2 2 0 0 1 2 2v12a2 2 0 0 0-2-2H3z"/><path d="M21 5h-7a2 2 0 0 0-2 2v12a2 2 0 0 1 2-2h7z"/></svg>
+          Read
+        </button>
+        <button class="tab" data-tab="kg">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="7" r="2.4"/><circle cx="12" cy="18" r="2.4"/><path d="M8.2 6.8 15.8 7M7.7 8.2l3.6 7.4M16.4 9.1l-3.6 6.6"/></svg>
+          Knowledge Graph <span id="tabCount" class="tab-count hidden"></span>
+        </button>
+        <button class="tab" data-tab="rag">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8 8 0 0 1-11.6 7.1L4 20l1.4-5.4A8 8 0 1 1 21 11.5z"/></svg>
+          Library Q&amp;A
+        </button>
+        <button class="tab" data-tab="memory">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 4A3 3 0 0 0 7 9a3 3 0 0 0-1 5.5A2.5 2.5 0 0 0 9.5 19a2.5 2.5 0 0 0 2.5-2.5V6.5A2.5 2.5 0 0 0 9.5 4z"/><path d="M14.5 4A2.5 2.5 0 0 1 17 6.5v10A2.5 2.5 0 0 1 14.5 19"/></svg>
+          Memory <span id="memTabCount" class="tab-count hidden"></span>
+        </button>
+      </nav>
+    </div>
+  </div>
+
+  <main class="container">
 
     <section id="tab-read" class="tab-panel active">
       <div class="controls">
@@ -300,6 +370,11 @@
       </div>
     </section>
   </main>
+
+  <footer class="site-footer">
+    <span>Build your own knowledge library — it grows from what you read and remembers across sessions.</span>
+    <span>Runs locally · <a href="https://github.com/Lyra-stellAI/BYO-WIKI" target="_blank" rel="noopener noreferrer">GitHub</a></span>
+  </footer>
 
   <div id="kgModal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-backdrop" data-close></div>

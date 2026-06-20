@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, url_for
 
 import config
 import knowledge_graph as kg
@@ -167,9 +167,25 @@ def web_search(query: str, max_results: int = 8) -> list[dict]:
     return results
 
 
+_LOGO_NAMES = ("owl.png", "owl.webp", "owl.jpg", "owl.jpeg", "owl.svg",
+               "logo.png", "logo.webp", "logo.jpg", "logo.svg")
+
+
+def _find_logo():
+    """URL of a custom brand image in static/ (owl.png, logo.png, …), or None.
+
+    Drop your own logo into static/ and it replaces the built-in SVG owl with no
+    code changes; until then the header falls back to the inline owl mark."""
+    folder = app.static_folder or "static"
+    for name in _LOGO_NAMES:
+        if os.path.exists(os.path.join(folder, name)):
+            return url_for("static", filename=name)
+    return None
+
+
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", logo_url=_find_logo())
 
 
 @app.route("/api/providers")
