@@ -27,3 +27,9 @@ hnswlib>=0.8.0
 # authenticate it:  npm i -g @anthropic-ai/claude-code
 # The Python Agent SDK is detected if present (informational only):
 # claude-agent-sdk>=0.1.0
+
+# Skill-run tracing: LangSmith export uses `langsmith` (already pulled in by
+# langchain). OTel spans are optional and only needed if OTEL_EXPORTER_OTLP_ENDPOINT
+# is set:
+# opentelemetry-sdk>=1.27.0
+# opentelemetry-exporter-otlp-proto-http>=1.27.0

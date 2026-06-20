@@ -398,6 +398,65 @@ def test_claude_code_unavailable_raises_clean_error():
         cc.cli_available = saved
 
 
+# --- LangSmith / OTel tracing export -----------------------------------------
+def test_tracing_payload_shape():
+    import skill_tracing as st
+    run = {"id": "run_1", "kind": "build", "skill_name": "S", "provider": "claude_code",
+           "model": "claude-opus-4-8", "gate": "accept", "status": "pending_review",
+           "duration_ms": 1000, "tokens": 500, "tools_used": 3,
+           "metrics": {"deterministic_ratio": 1.0, "rubric_mean": 0.8, "trigger_f1": 1.0}, "ok": True}
+    rec = st.build_run_record(run)
+    assert rec["name"] == "skill.build" and rec["run_type"] == "chain"
+    assert rec["outputs"]["gate"] == "accept" and rec["outputs"]["rubric_mean"] == 0.8
+    assert rec["feedback"]["gate_pass"] == 1.0 and rec["feedback"]["rubric_mean"] == 0.8
+    assert "agent-skill" in rec["tags"] and "build" in rec["tags"]
+    assert rec["metadata"]["skill_id"] is None and rec["metadata"]["tokens"] == 500
+
+
+def test_tracing_disabled_is_noop_and_fake_export():
+    import skill_tracing as st
+    run = {"id": "r", "kind": "eval", "gate": "reject", "status": "rejected",
+           "duration_ms": 50, "tokens": 10, "metrics": {"deterministic_ratio": 0.5}}
+    keys = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY", "SKILL_TRACING",
+            "LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
+    saved = {k: os.environ.get(k) for k in keys}
+    for k in keys:
+        os.environ.pop(k, None)
+    try:
+        assert st.langsmith_enabled() is False
+        assert st.export(run) == {"langsmith": False, "otel": False}
+
+        os.environ["LANGSMITH_API_KEY"] = "test-key"
+        os.environ["SKILL_TRACING"] = "true"
+        calls = {"create": 0, "update": 0, "fb": 0}
+
+        class FakeClient:
+            def create_run(self, **kw):
+                calls["create"] += 1
+                assert kw["project_name"] == st.SKILL_PROJECT
+                assert kw["name"] == "skill.eval"
+
+            def update_run(self, rid, **kw):
+                calls["update"] += 1
+
+            def create_feedback(self, rid, key=None, score=None):
+                calls["fb"] += 1
+
+        st._client = FakeClient()
+        st._project_ready = True
+        out = st.export(run)
+        assert out["langsmith"] is True
+        assert calls["create"] == 1 and calls["update"] == 1 and calls["fb"] >= 1
+    finally:
+        st._client = None
+        st._project_ready = False
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]

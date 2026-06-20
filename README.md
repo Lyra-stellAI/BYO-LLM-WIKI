@@ -139,6 +139,11 @@ is logged to an **observability store** (`skill_runs.py`) with per-phase timings
 token usage, the gate decision, and triggering **precision/recall** (does the
 description fire on the positive tests and stay quiet on the negative controls?);
 `benchmark()` aggregates those into a gate pass-rate and average latency/tokens.
+Each run is also mirrored to **LangSmith** (and optional **OTel** spans) in its own
+dedicated project (`skill_tracing.py`, `LANGSMITH_SKILL_PROJECT`, default
+"BYO-WIKI Agent Skills") — separate from the agent-layer project — with the metrics
+attached as numeric feedback so they chart; the Claude Code subprocess runs in its
+own process, so its tokens/cost/turns come from the CLI's JSON envelope.
 `refine_skill` closes the loop: it reads a skill's measured weaknesses (failed
 checks, low triggering precision/recall, weakest rubric dimension) and rebuilds it
 to fix them. Accepted skills are also saved to memory, so the agent auto-loads them
@@ -176,6 +181,7 @@ python runner.py --mode skill-pending                       # the human-review q
 python runner.py --mode skill-review --skill-id skill_xxx --decision accept --score 0.9
 python runner.py --mode skill-refine --skill-id skill_xxx    # fix measured weaknesses
 python runner.py --mode skill-observability                 # benchmark: pass-rate, latency, tokens
+python runner.py --mode skill-trace-init                    # create the LangSmith project for skill runs
 python runner.py --mode skill-list | skill-runs | skill-show --skill-id skill_xxx
 
 # Contextual RAG + evaluation
@@ -243,8 +249,8 @@ the query is a link; `/summarize`; `/providers`), **knowledge graph** (`/kg/stat
 files}`), **agent** (`/agent/{status,ask,maintain}`), **memory** (`/memory/{stats,
 list,recall,add,feedback}`), **RAG** (`/rag/{stats,ingest,search,ask,eval,
 experiment,dataset,ragas,crossdoc,crossdoc/labels}`), and **skills**
-(`/skill/{stats,list,pending,build,observability,runs,backends}`, plus `/skill/<id>`
-and `/skill/<id>/{eval,review,rebuild,refine,export}`). Most accept `{provider?,
+(`/skill/{stats,list,pending,build,observability,runs,backends,tracing/init}`, plus
+`/skill/<id>` and `/skill/<id>/{eval,review,rebuild,refine,export}`). Most accept `{provider?,
 model?}`; cross-doc returns `judge_alignment` when human labels exist, and
 `/skill/build` (accepts `use_tools` and `backend` = `pipeline` | `claude_code`)
 returns every phase plus the eval/gate report and an observability summary
@@ -268,6 +274,7 @@ Set provider keys (above) plus, for tracing/eval:
 | `SKILL_RUNS_MAX` | observability runs to keep in `data/skill_runs.json` (default 500). |
 | `SKILL_BACKEND` | default generator: `pipeline` or `claude_code`. |
 | `CLAUDE_CODE_BIN` / `CLAUDE_CODE_MODEL` | Claude Code CLI path + model for the `claude_code` backend. |
+| `SKILL_TRACING` / `LANGSMITH_SKILL_PROJECT` | export skill runs to LangSmith + OTel, in their own project. |
 | `PORT` | bind port (default 5000). |
 
 `.env` is gitignored — never commit real keys. See `.env.example` for the full list.
@@ -279,7 +286,7 @@ app.py / runner.py      Flask app (UI + API) / CLI
 agent.py kg_tools.py    deepagents harness + graph tools
 memory.py memory_tools.py   cross-session memory (layer 6)
 skill_library.py skill_eval.py skill_agent.py skill_tools.py   agent-skill build loop (layer 7)
-skill_runtime.py skill_runs.py skill_claude_agent.py   tool-use loop · observability · Claude Code subprocess backend
+skill_runtime.py skill_runs.py skill_claude_agent.py skill_tracing.py   tool-use loop · observability · Claude Code subprocess · LangSmith/OTel export
 knowledge_graph.py      multi-layer graph store + queries
 ingestion.py extraction.py enrich.py   chunking, entity/relation/topic extraction
 pipeline.py embeddings.py vectorstore.py   contextual ingest + HNSW index + MMR

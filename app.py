@@ -557,10 +557,18 @@ def api_skill_pending():
 @app.route("/api/skill/observability")
 def api_skill_observability():
     """Benchmark readout over logged runs: gate pass-rate, avg latency/tokens, etc."""
-    import skill_runs
+    import skill_runs, skill_tracing
     skill_id = (request.args.get("skill_id") or "").strip() or None
     return jsonify({"benchmark": skill_runs.benchmark(skill_id=skill_id),
-                    "recent": skill_runs.list_runs(skill_id=skill_id, limit=20)})
+                    "recent": skill_runs.list_runs(skill_id=skill_id, limit=20),
+                    "tracing": skill_tracing.status()})
+
+
+@app.route("/api/skill/tracing/init", methods=["POST"])
+def api_skill_tracing_init():
+    """Create the dedicated LangSmith project for skill runs (idempotent)."""
+    import skill_tracing
+    return jsonify({"ensure": skill_tracing.ensure_project(), "status": skill_tracing.status()})
 
 
 @app.route("/api/skill/backends")

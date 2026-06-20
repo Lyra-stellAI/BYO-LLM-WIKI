@@ -121,7 +121,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "memory-list", "memory-recall", "memory-add", "memory-forget",
         "skill-build", "skill-list", "skill-show", "skill-eval", "skill-pending",
         "skill-review", "skill-rebuild", "skill-refine", "skill-export", "skill-forget",
-        "skill-runs", "skill-observability", "skill-backends"])
+        "skill-runs", "skill-observability", "skill-backends", "skill-trace-init"])
     p.add_argument("--overwrite", action="store_true",
                    help="rag-crossdoc-labels: redraft key_points for already-labeled questions too")
     p.add_argument("--rerank", action=argparse.BooleanOptionalAction, default=True,
@@ -562,8 +562,19 @@ def main(argv=None) -> int:
         return 0
 
     if args.mode == "skill-observability":
-        import skill_runs, json as _json
+        import skill_runs, skill_tracing, json as _json
         print(_json.dumps(skill_runs.benchmark(skill_id=args.skill_id), indent=2))
+        print("tracing:", _json.dumps(skill_tracing.status()))
+        return 0
+
+    if args.mode == "skill-trace-init":
+        import skill_tracing, json as _json
+        res = skill_tracing.ensure_project()
+        print(_json.dumps(res, indent=2))
+        print("status:", _json.dumps(skill_tracing.status()))
+        if not res.get("ok"):
+            print("\nSet LANGSMITH_API_KEY and SKILL_TRACING=true (and optionally "
+                  "LANGSMITH_SKILL_PROJECT) to enable skill tracing.", file=sys.stderr)
         return 0
 
     if args.mode == "skill-backends":

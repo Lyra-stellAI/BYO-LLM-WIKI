@@ -109,6 +109,12 @@ def record(*, kind: str, skill_id: str = "", skill_name: str = "", provider: str
             _save(data)
     except Exception:  # noqa: BLE001  (observability must never break a build)
         pass
+    # Mirror to external tracing (LangSmith / OTel) outside the lock; best-effort.
+    try:
+        import skill_tracing
+        skill_tracing.export(run)
+    except Exception:  # noqa: BLE001
+        pass
     return run
 
 
