@@ -24,6 +24,8 @@ from pathlib import Path
 
 import knowledge_graph as kg
 import kg_tools
+import memory
+import memory_tools
 from providers import (
     ProviderError,
     agent_dependencies_available,
@@ -44,7 +46,7 @@ class AgentError(RuntimeError):
 # --- Prompts -----------------------------------------------------------------
 _BASE_SYSTEM_PROMPT = """You are the curator of a personal, long-lived knowledge library.
 
-The library has two connected layers you are responsible for:
+The library has three connected layers you are responsible for:
 1. A LAYERED KNOWLEDGE GRAPH you reach ONLY through the kg_* tools:
    sources -> chunks (evidence) -> entities -> topics (themes) -> syntheses.
    - Entities are canonical, de-duplicated things (people, orgs, concepts, ...).
@@ -52,6 +54,10 @@ The library has two connected layers you are responsible for:
 2. A WIKI of human-readable markdown pages under /wiki/ that you write with the
    filesystem tools (write_file/edit_file/read_file/ls). These unify disparate
    evidence into clear, canonical prose.
+3. A MEMORY of durable learnings across sessions, via the memory_* tools:
+   confirmed facts, durable answers, user preferences, known gaps, corrections.
+   Memory is how the library remembers between runs — consult it first and add
+   to it as you learn.
 
 Operating principles:
 - Ground every claim in the library. Use kg_search, kg_get_entity, kg_neighbors
@@ -63,6 +69,9 @@ Operating principles:
   when it clarifies. A flat pile of entities is a failure state.
 - Keep uncertainty explicit; when sources conflict, say so rather than guessing.
 - Cite evidence by chunk id and source title.
+- Remember across sessions: call memory_recall before you start to build on prior
+  learnings, and memory_write to record durable facts, gaps, and corrections
+  worth carrying forward. Reinforce existing memories rather than duplicating them.
 
 Filesystem rules:
 - Write only under /wiki/. Never edit /log.md or /AGENTS.md (the runner owns them).
@@ -87,6 +96,8 @@ Do the following, using the tools:
 5. If the new material forms a coherent theme worth a canonical note, write or
    update a short page at /wiki/topics/<slug>.md or /wiki/synthesis/<slug>.md
    summarizing it with citations.
+6. Record durable new learnings with memory_write (kind "fact") and any open
+   questions the material raises with memory_write (kind "gap"). Do not duplicate.
 
 Finish with a concise report:
 ## Merged
@@ -100,7 +111,8 @@ _QUERY_PROMPT = """Answer this question using ONLY the knowledge library:
 QUESTION: {question}
 
 Process:
-1. Read /wiki/index.md (ls + read_file) to orient yourself.
+1. Call memory_recall on the question first to reuse prior learnings, then read
+   /wiki/index.md (ls + read_file) to orient yourself.
 2. Use kg_search / kg_list_topics / kg_list_entities to find relevant nodes.
 3. Use kg_get_entity and kg_neighbors to follow relationships (multi-hop), and
    kg_get_chunk to read the underlying evidence you will cite.
@@ -120,7 +132,8 @@ Output format (markdown):
 
 _LINT_PROMPT = """Run a maintenance / health-check pass over the WHOLE library and improve it.
 
-Start by reading /wiki/index.md and calling kg_stats and kg_list_topics.
+Start by reading /wiki/index.md, calling kg_stats and kg_list_topics, and
+memory_recall to see what earlier passes already learned or flagged.
 
 Reconcile and strengthen, using the tools:
 1. DE-DUPLICATE: find entities that denote the same thing (search variants/
@@ -136,6 +149,8 @@ Reconcile and strengthen, using the tools:
    /wiki/topics/<slug>.md that unifies the evidence with citations; when a theme
    cuts across topics, write /wiki/synthesis/<slug>.md.
 6. Note contradictions explicitly in the relevant page rather than hiding them.
+7. Record durable conclusions worth carrying forward with memory_write (kind
+   "fact" or "observation") and unfilled gaps with memory_write (kind "gap").
 
 Work efficiently and decisively. You have a limited tool budget (aim for at most
 ~40 tool calls). Prioritize the highest-value fixes — the most obvious duplicate
@@ -304,7 +319,10 @@ def _build_agent(model, workspace: Path, *, read_only: bool):
     from deepagents.backends import FilesystemBackend
 
     backend = FilesystemBackend(root_dir=str(workspace), virtual_mode=True)
-    tools = kg_tools.read_tools() if read_only else kg_tools.all_tools()
+    if read_only:
+        tools = kg_tools.read_tools() + memory_tools.read_tools()
+    else:
+        tools = kg_tools.all_tools() + memory_tools.all_tools()
     return create_deep_agent(
         model=model,
         tools=tools,
@@ -414,6 +432,33 @@ def _resolve_model(provider: str | None, model: str | None):
         raise AgentError(str(exc)) from exc
 
 
+# --- Memory layer (cross-session recall + write-back) ------------------------
+def _memory_preamble(query: str, *, k: int = 6) -> str:
+    """Recalled-memory block to prepend to a prompt (best-effort, never raises)."""
+    try:
+        block, _ = memory.recall_block(query, k=k)
+    except Exception:  # noqa: BLE001
+        return ""
+    return (block + "\n\n") if block else ""
+
+
+def _gist(text: str, n: int = 400) -> str:
+    """Leading prose of a report/answer: headings, blank lines and the trailing
+    citations/sources section stripped."""
+    body = re.split(r"\n#{1,6}\s*(?:Citations|Key sources|Sources|Confidence)\b",
+                    text or "", maxsplit=1, flags=re.I)[0]
+    lines = [ln.strip() for ln in body.splitlines()
+             if ln.strip() and not ln.strip().startswith("#")]
+    return " ".join(lines)[:n].strip()
+
+
+def _remember_safe(text: str, **kw) -> None:
+    try:
+        memory.remember(text, **kw)
+    except Exception:  # noqa: BLE001  (memory write-back must never break a pass)
+        pass
+
+
 # --- Orchestrated modes (mirror llm-wiki: init / ingest / query / lint) ------
 def run_init(*, topic: str = "Knowledge", workspace: Path | None = None) -> dict:
     ws = ensure_library(workspace, topic)
@@ -430,8 +475,9 @@ def run_ingest(*, provider=None, model=None, new_entities: list[str] | None = No
         new_entities = [e["name"] for e in kg.list_entities(limit=40)]
     listing = "\n".join(f"- {n}" for n in new_entities[:60]) or "- (none reported)"
     agent = _build_agent(chat, ws, read_only=False)
+    prompt = _memory_preamble(", ".join(new_entities[:20])) + _INGEST_PROMPT.format(new_entities=listing)
     result = _invoke(
-        agent, _INGEST_PROMPT.format(new_entities=listing),
+        agent, prompt,
         run_name=f"ingest · {topic}",
         tags=["ingest"],
         metadata={"mode": "ingest", "entities": len(new_entities), "model": f"{rp}/{rm}"},
@@ -455,10 +501,11 @@ def run_query(question: str, *, provider=None, model=None, file_answer: bool = T
         raise AgentError("A question is required for query mode.")
     ws = ensure_library(workspace, topic)
     chat, rp, rm = _resolve_model(provider, model)
-    # Read-only reasoning pass.
+    # Read-only reasoning pass (memory recall is folded into the prompt).
     agent = _build_agent(chat, ws, read_only=True)
+    prompt = _memory_preamble(question.strip()) + _QUERY_PROMPT.format(question=question.strip())
     result = _invoke(
-        agent, _QUERY_PROMPT.format(question=question.strip()),
+        agent, prompt,
         run_name=f"query · {question.strip()[:48]}",
         tags=["query"],
         metadata={"mode": "query", "question": question.strip()[:200], "model": f"{rp}/{rm}"},
@@ -468,6 +515,16 @@ def run_query(question: str, *, provider=None, model=None, file_answer: bool = T
         "The query reached its step budget before producing a final answer; "
         "try a more specific question." if partial else "No answer was produced.")
     citations = _collect_citations(result, answer)
+
+    # Write-back: file a durable answer memory so the next session can reuse it.
+    if answer and not partial:
+        _remember_safe(
+            f"Q: {question.strip()}\nA: {_gist(answer)}",
+            kind="answer", salience=2, origin="agent_query",
+            confidence="EXTRACTED" if citations else "INFERRED",
+            source_url=(citations[0]["source_url"] if citations else ""),
+            tags=["agent", "query"],
+        )
 
     filed_path = None
     if file_answer and citations:
@@ -497,8 +554,9 @@ def run_lint(*, provider=None, model=None, topic: str = "Knowledge",
     before = kg.stats()["overall"]
     chat, rp, rm = _resolve_model(provider, model)
     agent = _build_agent(chat, ws, read_only=False)
+    prompt = _memory_preamble("library maintenance: known gaps and conclusions") + _LINT_PROMPT
     result = _invoke(
-        agent, _LINT_PROMPT,
+        agent, prompt,
         run_name=f"maintain · {topic}",
         tags=["lint", "maintain"],
         metadata={"mode": "lint", "entities_before": before["entities"], "model": f"{rp}/{rm}"},
@@ -508,6 +566,12 @@ def run_lint(*, provider=None, model=None, topic: str = "Knowledge",
         "Maintenance reached its step budget (recursion limit); the changes "
         "applied so far are saved. Run Maintain again to continue."
         if partial else "Maintenance pass complete.")
+    # Write-back: record a durable note about this maintenance pass.
+    if not partial:
+        g = _gist(report)
+        if g:
+            _remember_safe(f"Maintenance: {g}", kind="observation", salience=2,
+                           origin="agent_maintain", confidence="EXTRACTED", tags=["maintain"])
     refresh_index(ws, topic)
     after = kg.stats()["overall"]
     append_log(ws, "lint", "partial" if partial else "applied", summary=report,
