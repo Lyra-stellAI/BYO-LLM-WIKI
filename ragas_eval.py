@@ -49,7 +49,7 @@ def _wrappers(provider: str, model: str):
         from ragas.llms import LangchainLLMWrapper
         from ragas.embeddings import LangchainEmbeddingsWrapper
         from langchain_openai import OpenAIEmbeddings
-        llm = LangchainLLMWrapper(build_chat_model(provider, model, max_tokens=1024))
+        llm = LangchainLLMWrapper(build_chat_model(provider, model, max_tokens=2048))
         emb = LangchainEmbeddingsWrapper(
             OpenAIEmbeddings(model=os.environ.get("KG_EMBED_MODEL", "text-embedding-3-small")))
         _wrappers_cache[key] = (llm, emb)
@@ -81,7 +81,11 @@ def make_ragas_evaluators(provider: str, model: str) -> list:
                                LLMContextPrecisionWithoutReference)
     llm, emb = _wrappers(provider, model)
     faith = Faithfulness(llm=llm)
-    rel = ResponseRelevancy(llm=llm, embeddings=emb)
+    # strictness=1 -> generate ONE question (n=1). The default (strictness=3) asks
+    # the LLM for n=3 completions in one call, which qwen3.x / deepseek-v4 /
+    # gemini-3.x / mistral-large all reject ("n must be 1"), silently zeroing
+    # answer relevancy. n=1 keeps the metric working across every provider.
+    rel = ResponseRelevancy(llm=llm, embeddings=emb, strictness=1)
     cprec = LLMContextPrecisionWithoutReference(llm=llm)
 
     def _safe(metric, key):

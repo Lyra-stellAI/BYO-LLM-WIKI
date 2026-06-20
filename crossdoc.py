@@ -32,9 +32,11 @@ TEMPLATE_PATH = Path(__file__).parent / "eval" / "rag_eval_dataset_crossdoc.json
 HUMAN_LABELS_PATH = Path(__file__).parent / "eval" / "crossdoc_human_labels.json"
 DATASET_NAME = "Cross-document RAG eval"
 
-# RAGAS judge must avoid reasoning models (they burn the token budget on hidden
-# reasoning); this matches the selection used when wiring the RAGAS evaluators.
-_REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+# Models unfit to be the RAGAS judge: reasoning/thinking models spend the token
+# budget on hidden reasoning (truncated structured output -> "generation not
+# completed"). Skip them so the RAGAS judge falls through to a plain chat model in
+# the panel (e.g. deepseek-v4-flash), keeping the RAGAS metrics populated.
+_REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4", "qwen3.7", "gemini-3.5")
 
 
 def load_template() -> dict:
