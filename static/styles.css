@@ -1,80 +1,84 @@
 /* ============================================================================
    Knowledge Library — build your own, from the web
-   Warm "library" design system: rounded display (Baloo 2) + Nunito UI,
-   parchment / teal / terracotta palette, a light "paper" theme (default) and
-   a cozy dark library theme via [data-theme].
+   Hogwarts-library design system: engraved display (Cinzel) + EB Garamond body,
+   aged-parchment / ink / antique-gold / oxblood palette, a parchment light
+   theme (default) and a candlelit dark library via [data-theme].
    All class/id hooks used by app.js / kg.js / rag.js / memory.js are preserved.
    ========================================================================== */
 
 /* --- Theme tokens ---------------------------------------------------------- */
-/* Default = warm "paper library" (light). A cozy dark library is opt-in. */
+/* Default = aged-parchment library (light). A candlelit dark library is opt-in. */
 :root,
 :root[data-theme="light"] {
-  --bg: #f3e8cf;
-  --bg-tint-1: rgba(217, 130, 74, 0.13);   /* terracotta warmth */
-  --bg-tint-2: rgba(47, 125, 119, 0.10);   /* teal */
-  --surface: #fffaef;
-  --surface-2: #f6ecd5;
-  --surface-3: #efe1c3;
-  --border: #e8d8b5;
-  --border-strong: #d7c193;
-  --text: #3a4540;
-  --text-strong: #1f3a36;
-  --muted: #897f5f;
-  --faint: #aa9f7c;
-  --accent: #2b736d;       /* owl teal */
-  --accent-2: #c4673a;     /* terracotta */
-  --on-accent: #fff9ee;
-  --success: #5a8f3c;      /* sage */
-  --warn: #b9802a;
-  --error: #c0553c;
-  --ring: rgba(43, 115, 109, 0.28);
-  --header-bg: rgba(243, 232, 207, 0.85);
-  --graph-bg: #16211f;     /* graph canvas stays dark for legibility */
-  --code-bg: #f1e6cc;
-  --shadow-sm: 0 1px 2px rgba(90, 66, 30, 0.07);
-  --shadow: 0 14px 32px -18px rgba(96, 70, 35, 0.30);
-  --shadow-lg: 0 28px 60px -26px rgba(96, 70, 35, 0.36);
+  --bg: #e7d9ba;            /* aged parchment */
+  --bg-tint-1: rgba(184, 134, 11, 0.12);    /* candle gold */
+  --bg-tint-2: rgba(110, 31, 36, 0.06);     /* faint oxblood */
+  --surface: #f4ead0;
+  --surface-2: #e8d8b3;
+  --surface-3: #ddcaa0;
+  --border: #cdb588;
+  --border-strong: #b89c6a;
+  --text: #2c2113;          /* sepia ink */
+  --text-strong: #1b1408;
+  --muted: #6f5d3e;
+  --faint: #927d57;
+  --accent: #6e1f24;        /* oxblood / burgundy */
+  --accent-2: #9a7420;      /* antique bronze */
+  --on-accent: #f6ead0;
+  --on-accent-2: #f6ead0;
+  --gold: #b8860b;          /* decorative gilt */
+  --success: #2f6f4f;       /* deep emerald */
+  --warn: #9a6b16;
+  --error: #8a2b22;
+  --ring: rgba(110, 31, 36, 0.26);
+  --header-bg: rgba(231, 217, 186, 0.86);
+  --graph-bg: #15110a;      /* graph canvas stays dark for legibility */
+  --code-bg: #e9dcbd;
+  --shadow-sm: 0 1px 2px rgba(60, 44, 16, 0.10);
+  --shadow: 0 16px 34px -20px rgba(60, 44, 16, 0.34);
+  --shadow-lg: 0 30px 64px -28px rgba(60, 44, 16, 0.40);
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --bg: #17120d;           /* cozy night library / espresso */
-  --bg-tint-1: rgba(224, 145, 90, 0.12);
-  --bg-tint-2: rgba(77, 179, 166, 0.10);
-  --surface: #211a13;
-  --surface-2: #2b231a;
-  --surface-3: #372d20;
-  --border: #3b3023;
-  --border-strong: #50412f;
-  --text: #efe6d3;
-  --text-strong: #fcf5e6;
-  --muted: #b4a584;
-  --faint: #897c60;
-  --accent: #4db3a6;       /* brighter teal for dark */
-  --accent-2: #e0915a;     /* terracotta */
-  --on-accent: #181109;
-  --success: #84c264;
-  --warn: #e3b257;
-  --error: #ec7a5e;
-  --ring: rgba(77, 179, 166, 0.38);
-  --header-bg: rgba(23, 18, 13, 0.80);
-  --graph-bg: #112019;
-  --code-bg: #2b231a;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.40);
-  --shadow: 0 14px 34px -16px rgba(0, 0, 0, 0.60);
-  --shadow-lg: 0 28px 62px -24px rgba(0, 0, 0, 0.66);
+  --bg: #0f0b06;            /* candlelit Hogwarts library at night */
+  --bg-tint-1: rgba(212, 175, 55, 0.12);    /* candle gold */
+  --bg-tint-2: rgba(123, 31, 36, 0.10);     /* oxblood */
+  --surface: #1b140c;
+  --surface-2: #251c11;
+  --surface-3: #322713;
+  --border: #3a2c1a;
+  --border-strong: #503d24;
+  --text: #ece0c6;          /* parchment text */
+  --text-strong: #fbf2da;
+  --muted: #b09a72;
+  --faint: #897759;
+  --accent: #c8a44d;        /* antique gold */
+  --accent-2: #b6505a;      /* burgundy rose */
+  --on-accent: #1c1408;
+  --on-accent-2: #1c1208;
+  --gold: #d4af37;
+  --success: #74b083;
+  --warn: #d9b25a;
+  --error: #e0726a;
+  --ring: rgba(200, 164, 77, 0.36);
+  --header-bg: rgba(15, 11, 6, 0.82);
+  --graph-bg: #0f0b06;
+  --code-bg: #251c11;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow: 0 16px 36px -16px rgba(0, 0, 0, 0.66);
+  --shadow-lg: 0 30px 64px -24px rgba(0, 0, 0, 0.72);
   color-scheme: dark;
 }
 
 :root {
-  --serif: "Baloo 2", "Trebuchet MS", system-ui, sans-serif;  /* rounded display */
-  --sans: "Nunito", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  --serif: "Cinzel", "Trajan Pro", Georgia, serif;            /* engraved display */
+  --sans: "EB Garamond", Georgia, "Times New Roman", serif;   /* old-book body/UI */
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --r-sm: 10px;
-  --r: 14px;
-  --r-lg: 18px;
-  --r-xl: 24px;
+  --r-sm: 7px;
+  --r: 10px;
+  --r-lg: 14px;
+  --r-xl: 18px;
   --maxw: 1080px;
 }
 
@@ -93,8 +97,8 @@ body {
   background-attachment: fixed;
   color: var(--text);
   font-family: var(--sans);
-  font-size: 15px;
-  line-height: 1.6;
+  font-size: 16px;
+  line-height: 1.65;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   transition: background-color .25s ease, color .25s ease;
@@ -132,6 +136,7 @@ a:hover { text-decoration: underline; }
   backdrop-filter: saturate(140%) blur(14px);
   -webkit-backdrop-filter: saturate(140%) blur(14px);
   border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--gold) 35%, transparent);
 }
 .topbar-inner {
   max-width: var(--maxw);
@@ -156,31 +161,31 @@ a:hover { text-decoration: underline; }
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 46px;
-  height: 46px;
-  border-radius: 16px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-sm);
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 32%, #241a0e, #130d06);
+  border: 2px solid var(--gold);
+  box-shadow: var(--shadow-sm), inset 0 0 0 1px rgba(0, 0, 0, 0.35);
   flex: 0 0 auto;
 }
-.brand-mark svg { width: 30px; height: 30px; }
-.brand-text { display: flex; flex-direction: column; line-height: 1.02; }
+.brand-mark svg { width: 32px; height: 32px; }
+.brand-text { display: flex; flex-direction: column; line-height: 1.05; }
 .brand-eyebrow {
   font-family: var(--sans);
-  font-weight: 700;
-  font-size: 0.62rem;
+  font-weight: 600;
+  font-size: 0.66rem;
   text-transform: uppercase;
-  letter-spacing: 0.16em;
-  color: var(--accent-2);
+  letter-spacing: 0.22em;
+  color: var(--muted);
 }
 .brand-name {
   font-family: var(--serif);
   font-weight: 700;
-  font-size: 1.45rem;
-  letter-spacing: 0.01em;
+  font-size: 1.3rem;
+  letter-spacing: 0.06em;
   color: var(--accent);
-  margin-top: 1px;
+  margin-top: 2px;
 }
 .brand-tag { font-size: 0.76rem; color: var(--muted); letter-spacing: 0.02em; margin-top: 2px; }
 
@@ -229,12 +234,12 @@ a:hover { text-decoration: underline; }
 }
 .tab svg { width: 16px; height: 16px; opacity: 0.85; }
 .tab:hover { color: var(--text); }
-.tab.active { color: var(--text-strong); border-bottom-color: var(--accent); }
-.tab.active svg { opacity: 1; color: var(--accent); }
+.tab.active { color: var(--text-strong); border-bottom-color: var(--gold); }
+.tab.active svg { opacity: 1; color: var(--gold); }
 
 .tab-count {
   background: var(--accent-2);
-  color: var(--on-accent);
+  color: var(--on-accent-2);
   border-radius: 999px;
   padding: 1px 7px;
   font-size: 0.7rem;
@@ -354,7 +359,7 @@ select {
 .btn-secondary { background: var(--surface-2); color: var(--text); border-color: var(--border); }
 .btn-secondary:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-strong); }
 
-.btn-accent { background: var(--accent-2); color: var(--on-accent); box-shadow: var(--shadow-sm); }
+.btn-accent { background: var(--accent-2); color: var(--on-accent-2); box-shadow: var(--shadow-sm); }
 .btn-accent:hover:not(:disabled) { filter: brightness(1.06); }
 
 .btn-sm { padding: 7px 12px; font-size: 0.82rem; border-radius: var(--r-sm); }
@@ -393,7 +398,7 @@ kbd {
 
 .result-card { padding: 16px 18px; transition: border-color .15s, transform .08s, box-shadow .15s; }
 .result-card:hover { border-color: var(--border-strong); transform: translateY(-1px); box-shadow: var(--shadow); }
-.result-card h3 { margin: 0 0 4px; font-size: 1.05rem; font-family: var(--serif); font-weight: 600; }
+.result-card h3 { margin: 0 0 4px; font-size: 1.18rem; font-family: var(--sans); font-weight: 700; }
 .result-card h3 a { color: var(--text-strong); }
 .result-card h3 a:hover { color: var(--accent); }
 .result-card .url { color: var(--success); font-size: 0.8rem; word-break: break-all; margin-bottom: 8px; }
@@ -414,7 +419,7 @@ kbd {
   font-weight: 600;
   color: var(--muted);
 }
-.summary-card h2 { margin: 0 0 14px; font-size: 1.5rem; font-family: var(--serif); font-weight: 600; line-height: 1.25; color: var(--text-strong); }
+.summary-card h2 { margin: 0 0 14px; font-size: 1.7rem; font-family: var(--sans); font-weight: 700; line-height: 1.25; color: var(--text-strong); }
 .summary-card .summary-body { white-space: pre-wrap; font-size: 0.98rem; max-width: 72ch; }
 
 .spinner {
@@ -519,7 +524,7 @@ kbd {
 .kg-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .kg-graph {
   background:
-    radial-gradient(120% 120% at 50% 0%, rgba(77, 179, 166, 0.14), transparent 60%),
+    radial-gradient(120% 120% at 50% 0%, rgba(212, 175, 55, 0.16), transparent 60%),
     var(--graph-bg);
   border: 1px solid var(--border); border-radius: var(--r-lg); height: 500px; overflow: hidden;
 }
@@ -587,7 +592,7 @@ kbd {
 .ask-foot { margin-top: 14px; padding-top: 11px; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.8rem; }
 .ask-citations { margin-top: 12px; }
 .ask-citations .cite { padding: 9px 11px; margin-bottom: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 0.86rem; }
-.cite-id { font-family: var(--mono); font-size: 0.74rem; color: var(--accent-2); margin-right: 6px; }
+.cite-id { font-family: var(--mono); font-size: 0.74rem; color: var(--accent); margin-right: 6px; }
 .ask-citations .cite-prev, .cite-prev { margin-top: 4px; color: var(--muted); font-size: 0.8rem; }
 
 .rag-toggle { font-size: 0.82rem; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
