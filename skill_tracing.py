@@ -133,6 +133,45 @@ def build_run_record(run: dict) -> dict:
     }
 
 
+# Order the build phases appear under the parent run.
+_PHASE_ORDER = (("understand", "chain"), ("analyze", "chain"), ("codeact", "llm"),
+                ("deterministic", "chain"), ("rubric", "llm"), ("triggering", "chain"))
+
+
+def build_tree_plan(run: dict, phase_detail: dict) -> dict:
+    """Plan a parent run + one child run per phase (pure; unit-tested).
+
+    Children are laid end-to-end inside the parent's time window so the trace shows
+    a real timeline; each carries that phase's tokens / tool-calls / outputs."""
+    base = build_run_record(run)
+    parent = {
+        "name": base["name"], "run_type": "chain", "inputs": base["inputs"],
+        "outputs": base["outputs"], "metadata": base["metadata"], "tags": base["tags"],
+        "start_time": base["start_time"], "end_time": base["end_time"],
+        "feedback": base["feedback"],
+    }
+    cursor = base["start_time"]
+    end_cap = base["end_time"]
+    children = []
+    for name, default_type in _PHASE_ORDER:
+        d = phase_detail.get(name)
+        if not d:
+            continue
+        ms = int(d.get("ms") or 1)
+        cstart = min(cursor, end_cap)
+        cend = min(cstart + timedelta(milliseconds=ms), end_cap)  # never exceed the parent window
+        cursor = cend
+        children.append({
+            "name": f"skill.{name}",
+            "run_type": d.get("run_type", default_type),
+            "inputs": d.get("inputs") or {},
+            "outputs": d.get("outputs") or {},
+            "metadata": {k: d[k] for k in ("tokens", "tool_calls", "backend") if d.get(k) is not None},
+            "start_time": cstart, "end_time": cend,
+        })
+    return {"parent": parent, "children": children}
+
+
 # --- exporters ---------------------------------------------------------------
 def _export_langsmith(rec: dict) -> bool:
     global _project_ready
@@ -214,6 +253,62 @@ def export(run: dict) -> dict:
         except Exception:  # noqa: BLE001
             out["otel"] = False
     return out
+
+
+def export_tree(run: dict, phase_detail: dict) -> dict:
+    """Post a parent ``skill.build`` run with the per-phase calls as CHILD runs, so
+    the trace is a full tree instead of one flat run. Falls back to a flat run on any
+    error so a build is never lost. Best-effort; never raises."""
+    out = {"langsmith": False, "otel": False, "tree": False}
+    if not (langsmith_enabled() or otel_enabled()):
+        return out
+    if not langsmith_enabled():
+        out["otel"] = _safe_otel(run)
+        return out
+    try:
+        from langsmith.run_trees import RunTree
+    except Exception:  # noqa: BLE001  (SDK missing) -> flat
+        return export(run)
+    if not _project_ready:
+        ensure_project()
+    try:
+        plan = build_tree_plan(run, phase_detail)
+        p = plan["parent"]
+        parent = RunTree(name=p["name"], run_type="chain", inputs=p["inputs"],
+                         project_name=SKILL_PROJECT, tags=p["tags"],
+                         extra={"metadata": p["metadata"]}, start_time=p["start_time"])
+        parent.post()
+        for ch in plan["children"]:
+            child = parent.create_child(name=ch["name"], run_type=ch["run_type"], inputs=ch["inputs"])
+            child.start_time = ch["start_time"]
+            if ch["metadata"]:
+                child.extra = {"metadata": ch["metadata"]}
+            child.post()
+            child.end(outputs=ch["outputs"], end_time=ch["end_time"])
+            child.patch()
+        parent.end(outputs=p["outputs"], end_time=p["end_time"])
+        parent.patch()
+        client = get_client()
+        if client is not None:
+            for key, score in (p["feedback"] or {}).items():
+                try:
+                    client.create_feedback(parent.id, key=key, score=score)
+                except Exception:  # noqa: BLE001
+                    pass
+        out.update({"langsmith": True, "tree": True, "children": len(plan["children"])})
+    except Exception:  # noqa: BLE001  (RunTree quirks) -> don't lose the run
+        return export(run)
+    out["otel"] = _safe_otel(run)
+    return out
+
+
+def _safe_otel(run: dict) -> bool:
+    if not otel_enabled():
+        return False
+    try:
+        return _export_otel(build_run_record(run))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def status() -> dict:

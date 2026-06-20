@@ -393,6 +393,44 @@ def _timed(fn):
     return out, int((time.perf_counter() - t0) * 1000)
 
 
+def _phase_detail(phases: dict, understanding: dict, spec: dict, artifact: dict,
+                  report: dict, backend: str) -> dict:
+    """Per-phase payloads (timing, tokens, outputs) for the nested trace's children."""
+    pd: dict = {}
+    u = phases.get("understand")
+    if u:
+        pd["understand"] = {"run_type": "llm", "ms": u.get("ms"), "tokens": u.get("tokens"),
+                            "outputs": {"domain": (understanding or {}).get("domain"),
+                                        "summary": (understanding or {}).get("summary")}}
+    a = phases.get("analyze")
+    if a:
+        pd["analyze"] = {"run_type": "llm", "ms": a.get("ms"), "tokens": a.get("tokens"),
+                         "outputs": {"name": (spec or {}).get("name"),
+                                     "description": (spec or {}).get("description")}}
+    c = phases.get("codeact")
+    if c:
+        pd["codeact"] = {"run_type": "llm", "ms": c.get("ms"), "tokens": c.get("tokens"),
+                         "tool_calls": c.get("tool_calls"), "backend": c.get("backend") or backend,
+                         "outputs": {"name": (artifact or {}).get("name"),
+                                     "steps": len((artifact or {}).get("steps") or []),
+                                     "tests": len((artifact or {}).get("tests") or [])}}
+    det = report.get("deterministic") or {}
+    if det:
+        pd["deterministic"] = {"run_type": "chain", "outputs": {
+            "passed": det.get("passed"), "total": det.get("total"),
+            "ratio": det.get("ratio"), "failures": det.get("failures")}}
+    rub = report.get("rubric")
+    if rub:
+        pd["rubric"] = {"run_type": "llm", "ms": (phases.get("eval") or {}).get("ms"),
+                        "outputs": {"mean": rub.get("mean"), "per_dimension": rub.get("per_dimension"),
+                                    "panel": rub.get("panel")}}
+    trig = report.get("triggering")
+    if trig:
+        pd["triggering"] = {"run_type": "chain", "outputs": {
+            "precision": trig.get("precision"), "recall": trig.get("recall"), "f1": trig.get("f1")}}
+    return pd
+
+
 def _eval_record_return(skill_id: str, *, rp: str, rm: str, provider_label: str,
                         understanding, spec, artifact, phases: dict, wall0: float,
                         gen_tokens: int, tools_used: int, kind: str, backend: str,
@@ -415,10 +453,17 @@ def _eval_record_return(skill_id: str, *, rp: str, rm: str, provider_label: str,
         "trigger_recall": trig.get("recall"),
         "trigger_f1": trig.get("f1"),
     }
-    skill_runs.record(kind=kind, skill_id=skill_id, skill_name=skill["name"],
-                      provider=provider_label, model=rm, gate=report["gate"], status=skill["status"],
-                      duration_ms=duration_ms, tokens=gen_tokens, tools_used=tools_used,
-                      phases=phases, metrics=metrics)
+    # Record the run locally WITHOUT the flat export (trace=False); we post a richer
+    # nested trace below (parent skill.build run + one child run per phase).
+    run = skill_runs.record(kind=kind, skill_id=skill_id, skill_name=skill["name"],
+                            provider=provider_label, model=rm, gate=report["gate"],
+                            status=skill["status"], duration_ms=duration_ms, tokens=gen_tokens,
+                            tools_used=tools_used, phases=phases, metrics=metrics, trace=False)
+    try:
+        import skill_tracing
+        skill_tracing.export_tree(run, _phase_detail(phases, understanding, spec, artifact, report, backend))
+    except Exception:  # noqa: BLE001  (tracing must never break a build)
+        pass
     _remember_safe(
         f"{'Refined' if kind == 'refine' else 'Built'} agent skill '{skill['name']}' "
         f"via {backend}; eval gate = {report['gate']}.",

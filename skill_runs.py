@@ -82,8 +82,12 @@ def record(*, kind: str, skill_id: str = "", skill_name: str = "", provider: str
            model: str = "", gate: str | None = None, status: str | None = None,
            duration_ms: int | None = None, tokens: int | None = None,
            phases: dict | None = None, metrics: dict | None = None,
-           tools_used: int | None = None, ok: bool = True, error: str = "") -> dict:
-    """Append one observability run and return it. Never raises (best-effort)."""
+           tools_used: int | None = None, ok: bool = True, error: str = "",
+           trace: bool = True) -> dict:
+    """Append one observability run and return it. Never raises (best-effort).
+
+    ``trace=False`` skips the flat LangSmith/OTel export — used when the caller will
+    post a richer nested trace (a parent run with per-phase child runs) itself."""
     run = {
         "id": f"run_{uuid.uuid4().hex[:12]}",
         "kind": kind if kind in RUN_KINDS else "build",
@@ -110,11 +114,12 @@ def record(*, kind: str, skill_id: str = "", skill_name: str = "", provider: str
     except Exception:  # noqa: BLE001  (observability must never break a build)
         pass
     # Mirror to external tracing (LangSmith / OTel) outside the lock; best-effort.
-    try:
-        import skill_tracing
-        skill_tracing.export(run)
-    except Exception:  # noqa: BLE001
-        pass
+    if trace:
+        try:
+            import skill_tracing
+            skill_tracing.export(run)
+        except Exception:  # noqa: BLE001
+            pass
     return run
 
 

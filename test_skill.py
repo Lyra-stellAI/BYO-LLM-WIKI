@@ -457,6 +457,33 @@ def test_tracing_disabled_is_noop_and_fake_export():
                 os.environ[k] = v
 
 
+def test_tracing_tree_plan():
+    import skill_tracing as st
+    run = {"id": "r", "kind": "build", "skill_name": "S", "provider": "pipeline",
+           "model": "claude-opus-4-8", "gate": "accept", "status": "pending_review",
+           "duration_ms": 900, "tokens": 600,
+           "metrics": {"deterministic_ratio": 1.0, "rubric_mean": 0.8, "trigger_f1": 1.0}}
+    phase_detail = {
+        "understand": {"run_type": "llm", "ms": 100, "tokens": 100, "outputs": {"domain": "d"}},
+        "analyze": {"run_type": "llm", "ms": 100, "tokens": 150, "outputs": {"name": "S"}},
+        "codeact": {"run_type": "llm", "ms": 500, "tokens": 350, "tool_calls": 2,
+                    "outputs": {"name": "S", "steps": 3}},
+        "deterministic": {"run_type": "chain", "outputs": {"ratio": 1.0}},
+        "rubric": {"run_type": "llm", "ms": 200, "outputs": {"mean": 0.8}},
+        "triggering": {"run_type": "chain", "outputs": {"f1": 1.0}},
+    }
+    plan = st.build_tree_plan(run, phase_detail)
+    assert plan["parent"]["name"] == "skill.build"
+    names = [c["name"] for c in plan["children"]]
+    assert names == ["skill.understand", "skill.analyze", "skill.codeact",
+                     "skill.deterministic", "skill.rubric", "skill.triggering"]
+    # children are laid sequentially and stay within the parent window
+    assert plan["children"][0]["start_time"] == plan["parent"]["start_time"]
+    assert plan["children"][0]["end_time"] <= plan["children"][1]["start_time"]
+    assert plan["children"][-1]["end_time"] <= plan["parent"]["end_time"]
+    assert plan["children"][2]["metadata"]["tool_calls"] == 2  # codeact carries tool calls
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]
