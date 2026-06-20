@@ -26,6 +26,7 @@ import knowledge_graph as kg
 import kg_tools
 import memory
 import memory_tools
+import skill_tools
 from providers import (
     ProviderError,
     agent_dependencies_available,
@@ -58,6 +59,9 @@ The library has three connected layers you are responsible for:
    confirmed facts, durable answers, user preferences, known gaps, corrections.
    Memory is how the library remembers between runs — consult it first and add
    to it as you learn.
+4. A SKILL LIBRARY of reusable, human-approved competences, via the skill_* tools:
+   when a request looks like a repeatable task, call skill_recall to see whether a
+   proven skill already knows how to do it, then skill_get to follow its steps.
 
 Operating principles:
 - Ground every claim in the library. Use kg_search, kg_get_entity, kg_neighbors
@@ -320,9 +324,9 @@ def _build_agent(model, workspace: Path, *, read_only: bool):
 
     backend = FilesystemBackend(root_dir=str(workspace), virtual_mode=True)
     if read_only:
-        tools = kg_tools.read_tools() + memory_tools.read_tools()
+        tools = kg_tools.read_tools() + memory_tools.read_tools() + skill_tools.read_tools()
     else:
-        tools = kg_tools.all_tools() + memory_tools.all_tools()
+        tools = kg_tools.all_tools() + memory_tools.all_tools() + skill_tools.read_tools()
     return create_deep_agent(
         model=model,
         tools=tools,

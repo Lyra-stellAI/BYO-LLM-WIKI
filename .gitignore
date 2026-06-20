@@ -14,3 +14,4 @@ data/*.json
 data/*.tmp
 data/library/
 data/vectors/
+data/skills/

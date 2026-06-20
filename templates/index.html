@@ -84,6 +84,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 4A3 3 0 0 0 7 9a3 3 0 0 0-1 5.5A2.5 2.5 0 0 0 9.5 19a2.5 2.5 0 0 0 2.5-2.5V6.5A2.5 2.5 0 0 0 9.5 4z"/><path d="M14.5 4A2.5 2.5 0 0 1 17 6.5v10A2.5 2.5 0 0 1 14.5 19"/></svg>
           Memory <span id="memTabCount" class="tab-count hidden"></span>
         </button>
+        <button class="tab" data-tab="skill">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6z"/><path d="m9 12 2 2 4-4"/></svg>
+          Agent Skills <span id="skillTabCount" class="tab-count hidden"></span>
+        </button>
       </nav>
     </div>
   </div>
@@ -369,6 +373,72 @@
         <div id="memList" class="kg-list"></div>
       </div>
     </section>
+
+    <section id="tab-skill" class="tab-panel">
+      <div class="agent-panel">
+        <div class="agent-head">
+          <h3>Build a skill from context</h3>
+          <span id="skillStatus" class="provider-status"></span>
+        </div>
+        <p class="hint" style="margin-top:0">
+          Feed the builder the context you select — paste text, a query that
+          matches ingested chunks, or comma-separated tags. A sub-agent pipeline
+          <strong>understands → analyzes → authors (codeact) → evaluates → gates</strong>
+          a new agent skill. Skills that pass the gate queue for <em>your review</em>;
+          only an accepted skill joins the library.
+        </p>
+        <label class="form-field">
+          <span>Goal (optional)</span>
+          <input id="skillGoal" type="text" placeholder="e.g. a skill that drafts release notes from a changelog" />
+        </label>
+        <label class="form-field">
+          <span>Context — paste text</span>
+          <textarea id="skillText" rows="4" placeholder="Paste the context to build the skill from…"></textarea>
+        </label>
+        <div class="ingest-options">
+          <label class="field field-grow">
+            <span class="field-label">…or query ingested chunks</span>
+            <input id="skillQuery" type="text" placeholder="search the library for context" />
+          </label>
+          <label class="field field-grow">
+            <span class="field-label">…or tags</span>
+            <input id="skillTags" type="text" placeholder="research, AI" />
+          </label>
+        </div>
+        <div class="ingest-actions">
+          <button id="skillBuildBtn" class="btn btn-accent">Build skill →</button>
+          <label class="rag-toggle" style="margin-left:10px"><input type="checkbox" id="skillRubric" checked /> rubric panel</label>
+          <div id="skillBuildProg" class="ingest-progress"></div>
+        </div>
+        <div id="skillBuildOut" class="ask-answer hidden"></div>
+      </div>
+
+      <div class="kg-summary">
+        <div class="kg-stat"><span id="skillTotal">0</span> skills</div>
+        <div class="kg-stat"><span id="skillAccepted">0</span> accepted</div>
+        <div class="kg-stat"><span id="skillPending">0</span> pending review</div>
+        <div class="kg-stat"><span id="skillRevision">0</span> needs revision</div>
+        <div class="kg-stat"><span id="skillRejected">0</span> rejected</div>
+        <div class="kg-stat"><span id="skillAlign">—</span></div>
+      </div>
+
+      <div class="kg-granularity">
+        <span class="field-label">Filter</span>
+        <select id="skillFilter">
+          <option value="">All statuses</option>
+          <option value="pending_review">pending review</option>
+          <option value="accepted">accepted</option>
+          <option value="needs_revision">needs revision</option>
+          <option value="rejected">rejected</option>
+          <option value="draft">draft</option>
+        </select>
+        <button id="skillRefresh" class="btn btn-secondary btn-sm">Refresh</button>
+      </div>
+      <div class="kg-section">
+        <div class="kg-section-head"><h3>Skill library</h3></div>
+        <div id="skillList" class="kg-list"></div>
+      </div>
+    </section>
   </main>
 
   <footer class="site-footer">
@@ -418,5 +488,6 @@
   <script src="{{ url_for('static', filename='kg.js') }}"></script>
   <script src="{{ url_for('static', filename='rag.js') }}"></script>
   <script src="{{ url_for('static', filename='memory.js') }}"></script>
+  <script src="{{ url_for('static', filename='skill.js') }}"></script>
 </body>
 </html>

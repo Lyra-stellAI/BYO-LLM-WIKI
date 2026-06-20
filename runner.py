@@ -13,6 +13,12 @@ knowledge library instead of syncing to a hub. Modes:
             inspect and edit the cross-session memory layer (what the library
             has learned, durable answers, preferences, gaps, corrections)
 
+    skill-build / skill-list / skill-show / skill-eval / skill-pending /
+    skill-review / skill-rebuild / skill-export / skill-forget
+            build a reusable agent skill (layer 7) from selected context, grade it
+            (deterministic checks + LLM rubric), gate it, and align on it with a
+            human before it joins the skill library
+
 Examples:
     python runner.py --mode init
     python runner.py --mode ingest --source notes/ada.md --source notes/refs/
@@ -112,7 +118,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "init", "ingest", "query", "lint", "rag-ingest", "rag-ask", "rag-eval",
         "rag-experiment", "rag-dataset", "rag-ragas", "rag-crossdoc",
         "rag-crossdoc-labels", "kg-extract",
-        "memory-list", "memory-recall", "memory-add", "memory-forget"])
+        "memory-list", "memory-recall", "memory-add", "memory-forget",
+        "skill-build", "skill-list", "skill-show", "skill-eval", "skill-pending",
+        "skill-review", "skill-rebuild", "skill-export", "skill-forget"])
     p.add_argument("--overwrite", action="store_true",
                    help="rag-crossdoc-labels: redraft key_points for already-labeled questions too")
     p.add_argument("--rerank", action=argparse.BooleanOptionalAction, default=True,
@@ -138,6 +146,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--chunk-size", type=int, default=800)
     p.add_argument("--overlap", type=int, default=120)
     p.add_argument("--no-agent", action="store_true", help="Skip the agent organize/maintain step")
+    # Agent-skill layer (skill-*)
+    p.add_argument("--goal", default=None, help="skill-build: what skill to build from the context")
+    p.add_argument("--query", default=None, help="skill-build: pull matching chunks as context")
+    p.add_argument("--tags", default=None, help="skill-build: comma-separated tags to pull chunks by")
+    p.add_argument("--status", default=None, help="skill-list: filter by status")
+    p.add_argument("--skill-id", dest="skill_id", default=None, help="skill id for show/eval/review/...")
+    p.add_argument("--decision", default=None, help="skill-review: accept | reject | revise")
+    p.add_argument("--score", type=float, default=None, help="skill-review: human score 0-1")
+    p.add_argument("--notes", default=None, help="skill-review: reviewer notes / revision guidance")
+    p.add_argument("--rubric", action=argparse.BooleanOptionalAction, default=True,
+                   help="skill-build/eval: run the LLM rubric panel (default: on; --no-rubric for deterministic-only)")
     return p
 
 
@@ -387,6 +406,135 @@ def main(argv=None) -> int:
             return 2
         import memory
         print("removed" if memory.forget(args.mem_id) else "not found")
+        return 0
+
+    # --- Agent-skill layer (layer 7): build / eval / human review / library ---
+    if args.mode == "skill-build":
+        tags = [t.strip() for t in (args.tags or "").split(",") if t.strip()] or None
+        if not (args.query or args.text or tags):
+            print("error: provide --query, --text, or --tags as context for skill-build",
+                  file=sys.stderr)
+            return 2
+        import skill_agent, skill_library as sk, json as _json
+        try:
+            res = skill_agent.build_skill(
+                query=args.query, text=args.text, tags=tags, goal=args.goal or "",
+                provider=args.provider, model=args.model, run_rubric=args.rubric)
+        except skill_agent.SkillError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        s, ev = res["skill"], res["eval"]
+        print(f"Drafted skill '{s['name']}' ({s['id']})  →  gate={res['gate']}  status={s['status']}")
+        det = ev["deterministic"]
+        print(f"  deterministic: {det['passed']}/{det['total']} passed" +
+              (f"  (failures: {', '.join(det['failures'])})" if det['failures'] else ""))
+        if ev.get("rubric") and ev["rubric"].get("mean") is not None:
+            print(f"  rubric mean: {ev['rubric']['mean']}  per-dim: "
+                  f"{_json.dumps(ev['rubric'].get('per_dimension', {}))}")
+        print(f"  gate reasons: {'; '.join(ev.get('gate_reasons', []))}")
+        if s["status"] == sk.PENDING_REVIEW:
+            print("\nNext: review it with "
+                  f"`--mode skill-review --skill-id {s['id']} --decision accept|reject|revise`")
+        return 0
+
+    if args.mode == "skill-list":
+        import skill_library as sk, json as _json
+        print(_json.dumps(sk.stats(), indent=2))
+        rows = sk.list_skills(status=args.status, limit=200)
+        print(f"\n--- {len(rows)} skill(s) ---")
+        for r in rows:
+            print(f"  [{r['status']:<14}] {r['id']}  {r['name']}  —  {r.get('preview', '')}")
+        return 0
+
+    if args.mode == "skill-pending":
+        import skill_library as sk
+        rows = sk.pending_review()
+        if not rows:
+            print("(no skills awaiting review)")
+            return 0
+        print(f"--- {len(rows)} skill(s) awaiting human alignment ---")
+        for r in rows:
+            ev = r.get("eval") or {}
+            print(f"  {r['id']}  {r['name']}  (gate={ev.get('gate')}, rubric={ev.get('rubric_mean')})")
+            print(f"     {r.get('description', '')}")
+        return 0
+
+    if args.mode == "skill-show":
+        if not args.skill_id:
+            print("error: --skill-id is required for skill-show", file=sys.stderr)
+            return 2
+        import skill_library as sk
+        s = sk.get_skill(args.skill_id)
+        if not s:
+            print("not found", file=sys.stderr)
+            return 1
+        print(sk.to_skill_md(s))
+        return 0
+
+    if args.mode == "skill-eval":
+        if not args.skill_id:
+            print("error: --skill-id is required for skill-eval", file=sys.stderr)
+            return 2
+        import skill_library as sk, skill_eval, json as _json
+        s = sk.get_skill(args.skill_id)
+        if not s:
+            print("not found", file=sys.stderr)
+            return 1
+        report = skill_eval.run_eval(s, provider=args.provider, model=args.model,
+                                     run_rubric=args.rubric)
+        sk.record_eval(s["id"], report)
+        print(_json.dumps({k: v for k, v in report.items() if k != "rubric"}, indent=2))
+        if report.get("rubric"):
+            print("rubric:", _json.dumps({"mean": report["rubric"].get("mean"),
+                                          "per_dimension": report["rubric"].get("per_dimension")}))
+        return 0
+
+    if args.mode == "skill-review":
+        if not args.skill_id or not args.decision:
+            print("error: --skill-id and --decision (accept|reject|revise) are required",
+                  file=sys.stderr)
+            return 2
+        import skill_agent
+        try:
+            res = skill_agent.review_skill(
+                args.skill_id, decision=args.decision, score=args.score,
+                notes=args.notes or "", rebuild_on_revise=False)
+        except skill_agent.SkillError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"{res['skill']['name']} → status={res['status']}")
+        return 0
+
+    if args.mode == "skill-rebuild":
+        if not args.skill_id:
+            print("error: --skill-id is required for skill-rebuild", file=sys.stderr)
+            return 2
+        import skill_agent
+        try:
+            res = skill_agent.rebuild_skill(args.skill_id, provider=args.provider,
+                                            model=args.model, extra_guidance=args.notes or "",
+                                            run_rubric=args.rubric)
+        except skill_agent.SkillError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"Rebuilt '{res['skill']['name']}' → gate={res['gate']} status={res['status']}")
+        return 0
+
+    if args.mode == "skill-export":
+        if not args.skill_id:
+            print("error: --skill-id is required for skill-export", file=sys.stderr)
+            return 2
+        import skill_library as sk
+        res = sk.export_skill(args.skill_id)
+        print(f"Wrote {res['path']}" if res.get("ok") else f"error: {res.get('error')}")
+        return 0 if res.get("ok") else 1
+
+    if args.mode == "skill-forget":
+        if not args.skill_id:
+            print("error: --skill-id is required for skill-forget", file=sys.stderr)
+            return 2
+        import skill_library as sk
+        print("removed" if sk.forget(args.skill_id) else "not found")
         return 0
 
     return 2

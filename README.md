@@ -9,7 +9,7 @@ keeps coherent. One Flask app — web UI, JSON API, and a `runner.py` CLI. Inspi
 by the LangChain *llm-wiki* deep-agents example, but it builds a personal, on-disk
 library instead of syncing to a hub.
 
-Three cooperating parts:
+Four cooperating parts:
 
 - **Agentic knowledge graph** — save passages, extract entities + typed relations,
   and let a [`deepagents`](https://pypi.org/project/deepagents/) agent (local
@@ -20,6 +20,10 @@ Three cooperating parts:
   LLM re-ranker or document-aware MMR.
 - **Memory layer** — a cross-session store the library recalls *before* and writes
   back *after* every answer, so it improves from use, not just from ingestion.
+- **Agent-skill library** — on request, a sub-agent pipeline turns the context you
+  select into a reusable, *evaluated* agent skill: it understands → analyzes →
+  authors (codeact) → evaluates → gates the skill, and a human signs off before it
+  joins the library. So the library grows what it can *do*, not just what it knows.
 
 ## Providers
 
@@ -64,6 +68,7 @@ flat entity bag:
 | 4 | `topic` | a theme grouping entities (can nest) |
 | 5 | `synthesis` | an agent-written note unifying evidence |
 | 6 | `memory` | a durable, cross-session learning |
+| 7 | `agent_skill` | a reusable, evaluated competence built from selected context |
 
 Typed edges (`from_source`, `in_section`, `mentions`, `relation`, `belongs_to`,
 `subtopic_of`, `shares`, …) connect layers. The KG tab renders three
@@ -89,13 +94,36 @@ relevant memories into the prompt before each pass and **writes back** after
 Memories reinforce with reuse and de-duplicate on re-assertion. Evaluation runs
 disable memory so metrics stay deterministic.
 
+**Agent-skill layer** (`skill_*.py`, layer 7). A skill isn't knowledge quoted from
+a source (a chunk) or a learning recalled across sessions (a memory) — it's an
+*executable competence*: a name, a description (the signal an agent reads to decide
+whether to invoke it), step-by-step instructions, declared tools, positive *and*
+negative trigger cases, success criteria, and a small test set. When you feed the
+library selective context and ask for a skill, a sub-agent pipeline
+(`skill_agent.py`) runs explicit phases — **understand** (state what the context
+is) → **analyze** (design the spec + success criteria) → **codeact** (author the
+skill) → **eval** → **gate** — modeled on OpenAI's
+[*Evaluating skills*](https://developers.openai.com/blog/eval-skills) loop.
+Evaluation (`skill_eval.py`) is two-layered: fast **deterministic checks** (name,
+usable description, ≥2 explicit steps, triggers + negative controls, declared
+tools, positive/negative tests, no placeholders, grounded in its source context)
+plus a cross-family **rubric judge panel** that scores *outcome / process / style /
+efficiency* and groundedness. The **accept/reject gate** combines the two but never
+finalizes on its own: a passing skill lands in `pending_review`, and only a
+**human** (`review_skill`) moves it to `accepted` (or `revise`, which folds notes
+back into a fresh `codeact` pass). The store (`skill_library.py`) reports how often
+the human's call matched the gate, and accepted skills are recallable — the
+curating agent calls `skill_recall` to find a proven skill for a repeatable task.
+
 ## Web UI
 
 Tabs for **Read** (web search, or paste a link to fetch + extract its context;
 summarize a URL or raw text; highlight to save a chunk to the KG), **Knowledge
 Graph** (ingest Files/URLs/Text, browse staging + the layer-colored graph,
 *Integrate*, *Ask*, *Maintain*), **Library Q&A** (cited answers with re-ranker /
-MMR toggles), and **Memory** (recall, add, reinforce/forget).
+MMR toggles), **Memory** (recall, add, reinforce/forget), and **Agent Skills**
+(build a skill from context, watch the eval/gate report, then accept / revise /
+reject from the review queue).
 
 ## Command line
 
@@ -110,6 +138,12 @@ python runner.py --mode lint                       # whole-library maintenance
 python runner.py --mode memory-add --text "…" --kind preference
 python runner.py --mode memory-recall --question "agent memory"
 python runner.py --mode memory-list | memory-forget --id memory_xxx
+
+# Agent skills (layer 7): build from context → eval/gate → human review → library
+python runner.py --mode skill-build --query "deep agents" --goal "draft a design brief"
+python runner.py --mode skill-pending                       # the human-review queue
+python runner.py --mode skill-review --skill-id skill_xxx --decision accept --score 0.9
+python runner.py --mode skill-list | skill-show --skill-id skill_xxx | skill-export --skill-id skill_xxx
 
 # Contextual RAG + evaluation
 python runner.py --mode rag-ingest --source eval/corpus_urls.txt   # 28-doc corpus
@@ -174,9 +208,12 @@ Grouped under `/api`: **read** (`/search` — web results, or extracted context 
 the query is a link; `/summarize`; `/providers`), **knowledge graph** (`/kg/stats`,
 `/kg/graph`, `/kg/add`, `/kg/integrate`, `/kg/query`, `/kg/ingest/{text,urls,
 files}`), **agent** (`/agent/{status,ask,maintain}`), **memory** (`/memory/{stats,
-list,recall,add,feedback}`), and **RAG** (`/rag/{stats,ingest,search,ask,eval,
-experiment,dataset,ragas,crossdoc,crossdoc/labels}`). Most accept `{provider?,
-model?}`; cross-doc returns `judge_alignment` when human labels exist.
+list,recall,add,feedback}`), **RAG** (`/rag/{stats,ingest,search,ask,eval,
+experiment,dataset,ragas,crossdoc,crossdoc/labels}`), and **skills**
+(`/skill/{stats,list,pending,build}`, plus `/skill/<id>` and
+`/skill/<id>/{eval,review,rebuild,export}`). Most accept `{provider?,
+model?}`; cross-doc returns `judge_alignment` when human labels exist, and
+`/skill/build` returns every pipeline phase plus the eval/gate report.
 
 ## Configuration
 
@@ -190,6 +227,8 @@ Set provider keys (above) plus, for tracing/eval:
 | `*_BASE_URL` | override an OpenAI-compatible endpoint (proxy/Azure/region). |
 | `KG_DATA_DIR` | store directory (default `data/`). |
 | `KG_AGENT_RECURSION_LIMIT` | max agent steps for Maintain/`lint` (default 150). |
+| `SKILL_GATE_ACCEPT` / `SKILL_GATE_REJECT` | skill-gate rubric thresholds (0.70 / 0.40). |
+| `SKILL_DET_PASS` | deterministic pass-ratio a skill must clear (default 0.80). |
 | `PORT` | bind port (default 5000). |
 
 `.env` is gitignored — never commit real keys. See `.env.example` for the full list.
@@ -200,6 +239,7 @@ Set provider keys (above) plus, for tracing/eval:
 app.py / runner.py      Flask app (UI + API) / CLI
 agent.py kg_tools.py    deepagents harness + graph tools
 memory.py memory_tools.py   cross-session memory (layer 6)
+skill_library.py skill_eval.py skill_agent.py skill_tools.py   agent-skill build loop (layer 7)
 knowledge_graph.py      multi-layer graph store + queries
 ingestion.py extraction.py enrich.py   chunking, entity/relation/topic extraction
 pipeline.py embeddings.py vectorstore.py   contextual ingest + HNSW index + MMR

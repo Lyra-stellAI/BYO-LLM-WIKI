@@ -621,6 +621,35 @@ kbd {
 .mem-act { cursor: pointer; }
 .mem-act:hover { background: var(--surface-3); filter: brightness(1.15); }
 
+/* --- Agent Skills tab ----------------------------------------------------- */
+.skill-badge {
+  border-radius: 5px; padding: 1px 7px; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.02em;
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+}
+.skill-st-accepted { color: var(--success); border-color: color-mix(in srgb, var(--success) 50%, transparent); }
+.skill-st-pending_review { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+.skill-st-needs_revision { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+.skill-st-rejected { color: var(--error); border-color: color-mix(in srgb, var(--error) 50%, transparent); }
+.skill-st-draft, .skill-st-evaluated { color: var(--muted); }
+.skill-gate-accept { color: var(--success); border-color: color-mix(in srgb, var(--success) 50%, transparent); }
+.skill-gate-review { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+.skill-gate-reject { color: var(--error); border-color: color-mix(in srgb, var(--error) 50%, transparent); }
+.skill-act { cursor: pointer; }
+.skill-act:hover { background: var(--surface-3); filter: brightness(1.1); }
+.skill-act.ok { color: var(--success); border-color: color-mix(in srgb, var(--success) 35%, transparent); }
+.skill-card { cursor: default; }
+.skill-review-row { display: flex; gap: 8px; margin: 8px 0 6px; }
+.skill-review-row .skill-notes { flex: 1; }
+.skill-review-row input { font-size: 0.82rem; padding: 6px 9px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); color: var(--text); }
+.skill-review-row .skill-score { width: 96px; }
+.skill-detail { margin-top: 8px; }
+.skill-detail h4 { margin: 10px 0 4px; font-size: 0.82rem; }
+.skill-md {
+  white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 0.78rem;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 10px 12px; max-height: 360px; overflow: auto; color: var(--text);
+}
+
 /* --- Footer --------------------------------------------------------------- */
 .site-footer {
   max-width: var(--maxw); margin: 0 auto; padding: 28px 24px 48px;

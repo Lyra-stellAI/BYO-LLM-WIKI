@@ -9,6 +9,10 @@ Layers (a node's ``layer`` field), from concrete evidence up to synthesis:
     3  topic       - a theme that groups related entities (hierarchical)
     4  synthesis   - an agent-written canonical note that unifies evidence
 
+Two further layers live in their own stores (not in these graph JSON files):
+    6  memory      - a durable, cross-session learning  (see memory.py)
+    7  agent_skill - a reusable, evaluated competence    (see skill_library.py)
+
 Edges are typed:
 
     from_source  chunk    -> source     provenance
@@ -46,10 +50,11 @@ SCHEMA_VERSION = 2
 
 # Node layers / types ---------------------------------------------------------
 # source -> section (contextual summary) -> chunk -> entity -> topic -> synthesis
-# Layer 6 ("memory") is the cross-session learning layer; it lives in its own
-# store (see memory.py) rather than in these graph JSON files.
+# Layer 6 ("memory") is the cross-session learning layer and layer 7
+# ("agent_skill") is the reusable-competence layer; both live in their own stores
+# (see memory.py and skill_library.py) rather than in these graph JSON files.
 LAYER_OF = {"source": 0, "section": 1, "chunk": 2, "entity": 3, "topic": 4,
-            "synthesis": 5, "memory": 6}
+            "synthesis": 5, "memory": 6, "agent_skill": 7}
 
 ENTITY_KINDS = {
     "person", "organization", "place", "concept",
