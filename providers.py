@@ -128,10 +128,10 @@ def resolve_judge(gen_provider: str, gen_model: str, judge_provider: str | None 
 # LLM-as-judge PANEL: one capable model per FAMILY for maximum judge diversity.
 JUDGE_PANEL_CANDIDATES = [
     ("openai", "gpt-5.2-2025-12-11"),
-    ("qwen", "qwen3-max"),
-    ("deepseek", "deepseek-chat"),         # DeepSeek V3
+    ("qwen", "qwen3.7-plus"),
+    ("deepseek", "deepseek-v4-flash"),     # DeepSeek V4 Flash
     ("gemini", "gemini-3.5-flash"),
-    ("mistral", "mistral-large-latest"),
+    ("mistral", "mistral-large-2512"),     # Mistral Large 3 (Dec 2025 snapshot)
 ]
 
 
