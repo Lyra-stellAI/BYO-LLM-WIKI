@@ -317,9 +317,17 @@ def _make_postgres_saver():
         configure=_configure,
         open=False,
     )
-    pool.open(wait=True, timeout=15)  # raises PoolTimeout if the DB is unreachable
-    saver = PostgresSaver(pool)
-    saver.setup()  # idempotent: creates the checkpoint tables in the schema
+    try:
+        pool.open(wait=True, timeout=15)  # raises PoolTimeout if the DB is unreachable
+        saver = PostgresSaver(pool)
+        saver.setup()  # idempotent: creates the checkpoint tables in the schema
+    except Exception:
+        # Close the pool so its background worker thread doesn't leak on fallback.
+        try:
+            pool.close()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
     _graph_cache["pg_pool"] = pool
     return saver
 
