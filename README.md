@@ -1,9 +1,9 @@
-# Build Your Own Knowledge Library Agent
+# Build Your Own WIKI
 
 <img width="1695" height="928" alt="ChatGPT Image Jun 19, 2026, 10_56_01 PM" src="https://github.com/user-attachments/assets/0b73a45f-65e8-4170-ab05-474049fc6a77" />
 
 
-Build **your own knowledge library** from the web. Search and summarize pages,
+Build **your own wiki** from the web, files, text. Search and summarize pages,
 ingest them into a contextual vector index for grounded Q&A, and grow a layered
 knowledge graph that an LLM agent helps keep coherent. It runs as a single Flask
 app with a web UI, a JSON API, and a `runner.py` CLI.
