@@ -17,6 +17,7 @@
       <button class="tab active" data-tab="read">Read</button>
       <button class="tab" data-tab="kg">Knowledge Graph <span id="tabCount" class="tab-count hidden"></span></button>
       <button class="tab" data-tab="rag">Library Q&amp;A</button>
+      <button class="tab" data-tab="memory">Memory <span id="memTabCount" class="tab-count hidden"></span></button>
     </nav>
 
     <section id="tab-read" class="tab-panel active">
@@ -218,6 +219,86 @@
         <div id="ragAnswer" class="ask-answer hidden"></div>
       </div>
     </section>
+
+    <section id="tab-memory" class="tab-panel">
+      <div class="agent-panel">
+        <div class="agent-head">
+          <h3>Memory layer</h3>
+          <span id="memStatus" class="provider-status"></span>
+        </div>
+        <p class="hint" style="margin-top:0">
+          What the library has learned across sessions — confirmed facts, durable
+          answers, your preferences, known gaps, and corrections. Recall folds these
+          into the agent and Library Q&amp;A; answering and maintaining write new ones back.
+        </p>
+        <div class="agent-ask-row">
+          <input id="memRecallInput" type="text" placeholder="Recall memories about…" autocomplete="off" />
+          <button id="memRecallBtn" class="btn btn-accent">Recall</button>
+        </div>
+        <div id="memRecallOut" class="ask-answer hidden"></div>
+      </div>
+
+      <div class="kg-summary">
+        <div class="kg-stat"><span id="memTotal">0</span> memories</div>
+        <div class="kg-stat"><span id="memFacts">0</span> facts</div>
+        <div class="kg-stat"><span id="memAnswers">0</span> answers</div>
+        <div class="kg-stat"><span id="memPrefs">0</span> preferences</div>
+        <div class="kg-stat"><span id="memGaps">0</span> gaps</div>
+        <div class="kg-stat"><span id="memCorrections">0</span> corrections</div>
+        <div class="kg-stat"><span id="memUses">0</span> uses</div>
+      </div>
+
+      <div class="agent-panel">
+        <div class="agent-head"><h3>Add a memory</h3></div>
+        <label class="form-field">
+          <span>Memory</span>
+          <textarea id="memText" rows="2" placeholder="A durable fact, preference, or note to remember…"></textarea>
+        </label>
+        <div class="ingest-options">
+          <label class="field">
+            <span class="field-label">Kind</span>
+            <select id="memKind">
+              <option value="fact">fact</option>
+              <option value="preference">preference</option>
+              <option value="answer">answer</option>
+              <option value="gap">gap</option>
+              <option value="correction">correction</option>
+              <option value="observation">observation</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Salience</span>
+            <input type="number" id="memSalience" value="3" min="1" max="5" step="1" />
+          </label>
+          <label class="field field-grow">
+            <span class="field-label">Tags (comma-separated)</span>
+            <input type="text" id="memTags" placeholder="e.g. project, goal" />
+          </label>
+        </div>
+        <div class="ingest-actions">
+          <button id="memAddBtn" class="btn btn-accent">Add memory</button>
+          <div id="memAddProg" class="ingest-progress"></div>
+        </div>
+      </div>
+
+      <div class="kg-granularity">
+        <span class="field-label">Filter</span>
+        <select id="memFilter">
+          <option value="">All kinds</option>
+          <option value="fact">facts</option>
+          <option value="answer">answers</option>
+          <option value="preference">preferences</option>
+          <option value="gap">gaps</option>
+          <option value="correction">corrections</option>
+          <option value="observation">observations</option>
+        </select>
+        <button id="memRefresh" class="btn btn-secondary btn-sm">Refresh</button>
+      </div>
+      <div class="kg-section">
+        <div class="kg-section-head"><h3>Stored memories</h3></div>
+        <div id="memList" class="kg-list"></div>
+      </div>
+    </section>
   </main>
 
   <div id="kgModal" class="modal hidden" role="dialog" aria-modal="true">
@@ -261,5 +342,6 @@
   <script src="{{ url_for('static', filename='app.js') }}"></script>
   <script src="{{ url_for('static', filename='kg.js') }}"></script>
   <script src="{{ url_for('static', filename='rag.js') }}"></script>
+  <script src="{{ url_for('static', filename='memory.js') }}"></script>
 </body>
 </html>

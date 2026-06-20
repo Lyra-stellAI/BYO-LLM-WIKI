@@ -1,4 +1,4 @@
-# Knowledge Library Agent
+# Build Your Own Knowledge Library Agent
 <img width="1408" height="768" alt="Gemini_Generated_Image_qkb760qkb760qkb7" src="https://github.com/user-attachments/assets/f63e43bb-b635-4ecc-8ddf-78102f99975c" />
 
 Build **your own knowledge library** from the web. Search and summarize pages,
@@ -16,6 +16,9 @@ halves:
 - **A contextual RAG library** — ingest pages into a two-layer HNSW vector index
   built with Anthropic-style *contextual retrieval*, then answer cited questions
   with hierarchical retrieval plus an LLM re-ranker or document-aware MMR.
+- **A memory layer** — a cross-session memory the library *recalls before* and
+  *writes back after* every answer and maintenance pass, so it keeps improving
+  from its own use instead of only growing when you ingest documents.
 
 It is inspired by the LangChain *llm-wiki* deep-agents example: it reuses that
 harness and its `init` / `ingest` / `query` / `lint` orchestration, but builds a
@@ -75,6 +78,7 @@ property graph that unifies disparate sources into reusable understanding:
 | 3 | `entity` | a canonical, de-duplicated thing (person, org, concept, …) |
 | 4 | `topic` | a theme that groups related entities (can nest) |
 | 5 | `synthesis` | an agent-written canonical note unifying the evidence |
+| 6 | `memory` | a durable, cross-session learning (see [Memory layer](#memory-layer-keeping-the-library-dynamic)) |
 
 Typed edges connect the layers: `from_source`, `in_section`, `mentions`,
 `relation` (entity→entity predicate), `belongs_to` (entity→topic), `subtopic_of`,
@@ -131,6 +135,32 @@ In short: embeddings + MMR/re-rank *answer the question*; the knowledge graph
   top-k to spread across distinct documents (relevance − redundancy, with a
   same-document penalty), lifting multi-doc recall.
 
+### Memory layer: keeping the library dynamic
+
+The graph and vector index grow when you *ingest documents*. The **memory layer**
+(`memory.py`, layer 6) adds the other half of "dynamic": the library learns from
+its own use and remembers across sessions. It is a separate plain-JSON store
+(`data/memory.json`), keeping the local-first design — semantic recall reuses the
+same OpenAI embeddings as RAG (and falls back to keyword overlap when no
+`OPENAI_API_KEY` is set, so it always works).
+
+- **Recall (before).** Every agent `query`/`ingest`/`lint` pass and every RAG
+  `ask` first recalls the most relevant memories and folds them into the prompt
+  as background (clearly marked *not citable*, so RAG still cites real passages).
+- **Write-back (after).** Answering files a durable `answer` memory; a Maintain
+  pass records an `observation`; the agent can record `fact`/`gap` memories with
+  its `memory_write` tool. Memories **reinforce with reuse** (`use_count`,
+  `salience`) and **de-duplicate** on re-assertion — the same mechanics that make
+  entities strengthen in the graph.
+- **Feedback loop.** 👍/👎 ratings and written corrections feed back as memories;
+  a correction **supersedes** the memory it fixes so stale knowledge drops out of
+  recall.
+
+Memory kinds: `fact`, `answer`, `preference`, `gap`, `correction`, `observation`.
+Manage them in the **Memory** tab, the `memory-*` CLI modes, or the
+`/api/memory/*` endpoints. Evaluation runs (`rag-eval`/experiments) disable
+memory recall and write-back so deterministic metrics stay comparable.
+
 ## Using the web UI
 
 ### Read tab
@@ -166,6 +196,13 @@ Ask questions grounded in the **contextual vector library** (separate from the
 agent's KG). Toggle the **re-ranker** and **MMR (diversify)**, choose a provider/
 model, and get an answer with cited passages, dates, and scores.
 
+### Memory tab
+Inspect and grow the library's [memory layer](#memory-layer-keeping-the-library-dynamic).
+**Recall** memories by query; **add** a memory (pick a kind and salience); browse
+**stored memories** filtered by kind, with 👍/👎 to reinforce or demote and a
+*forget* button. The header shows how many memories are embedded and whether
+recall is semantic (an `OPENAI_API_KEY` is set) or keyword-only.
+
 ## Command line (`runner.py`)
 
 ```bash
@@ -174,6 +211,12 @@ python runner.py --mode init
 python runner.py --mode ingest --source notes/ada.md --url https://example.com/article
 python runner.py --mode query --question "What did Ada contribute to computing?"
 python runner.py --mode lint                       # whole-library maintenance pass
+
+# Memory layer (cross-session learnings)
+python runner.py --mode memory-add --text "User is researching agent memory." --kind preference
+python runner.py --mode memory-recall --question "agent memory"   # what does it remember?
+python runner.py --mode memory-list                # all memories + stats
+python runner.py --mode memory-forget --id memory_xxxxxxxx
 
 # Contextual RAG library
 python runner.py --mode rag-ingest --source eval/corpus_urls.txt   # bundled 28-doc corpus
@@ -251,7 +294,7 @@ The single-judge path (`providers.resolve_judge`) picks a different-family model
 the cross-document eval goes further with a **judge panel** of five distinct
 families (`providers.judge_panel`):
 
-`gpt-5.2-2025-12-11` · `qwen3-max` · `deepseek-chat` · `gemini-3.5-flash` ·
+`gpt-5.2` · `qwen3.7-max` · `deepseekV3-chat` · `gemini-3.5-flash` ·
 `mistral-large-latest`
 
 Each scores its own `correctness_<model>` column plus a panel mean, averaging out
@@ -313,6 +356,15 @@ shows the active project when enabled.
   → grounded answer + citations.
 - `POST /api/agent/maintain` — `{ "provider?", "model?" }` runs the maintenance pass.
 
+**Memory layer**
+- `GET /api/memory/stats` — totals, counts by kind, how many are embedded.
+- `GET /api/memory/list?kind=&limit=` — stored memories (most salient first).
+- `POST /api/memory/recall` — `{ "query", "k?", "kinds?" }` → most relevant memories.
+- `POST /api/memory/add` — `{ "text", "kind?", "salience?", "tags?" }` stores a memory.
+- `POST /api/memory/feedback` — `{ "memory_id?", "rating?", "correction?", "question?" }`
+  reinforces/demotes a memory or files a superseding correction.
+- `DELETE /api/memory/<id>` — forget a memory.
+
 **RAG library**
 - `GET /api/rag/stats` — vector library stats (documents, sections, chunks, index).
 - `POST /api/rag/ingest` — `{ "urls": [...], "provider?", "model?" }` builds the
@@ -353,8 +405,10 @@ shows the active project when enabled.
 | `LANGSMITH_PROJECT` | Project **name** fallback if no ID is set. |
 | `LANGSMITH_RAG_DATASET_ID` | Single-doc eval dataset ID. |
 | `LANGSMITH_CROSSDOC_DATASET_ID` | Cross-document eval dataset ID. |
-| `KG_DATA_DIR` | Directory for the graph + vector stores (default `data/`). |
+| `KG_DATA_DIR` | Directory for the graph + vector + memory stores (default `data/`). |
 | `KG_AGENT_RECURSION_LIMIT` | Max agent steps for Maintain / `lint` (default 150). |
+| `KG_MEMORY_DEDUP_THRESHOLD` | Cosine ≥ this reinforces an existing memory instead of adding a new one (default `0.92`). |
+| `KG_MEMORY_RECALL_FLOOR` | Min semantic similarity for a memory to be recalled (default `0.20`; keyword path uses `KG_MEMORY_RECALL_FLOOR_KEYWORD`, `0.05`). |
 | `PORT` | Port to bind (default `5000`). |
 
 `.env` is gitignored; never commit real keys. See `.env.example` for the full
@@ -367,6 +421,8 @@ app.py             Flask app: web UI + JSON API
 runner.py          CLI: init/ingest/query/lint + rag-* + kg-extract
 agent.py           deepagents harness (local filesystem backend)
 kg_tools.py        agent tools over the knowledge graph
+memory.py          cross-session memory store (recall + write-back, layer 6)
+memory_tools.py    agent tools over the memory layer (recall / write)
 knowledge_graph.py multi-layer graph store + queries (granularity, dedup, map)
 ingestion.py       chunking + fetch/parse for the KG staging area
 extraction.py      entity + relation extraction
@@ -381,8 +437,8 @@ crossdoc.py        cross-document dataset + experiment + judge panel
 providers.py       provider table, chat-model factory, judge selection
 config.py          .env loading + LangSmith project resolution
 eval/              corpus_urls.txt + committed dataset templates
-static/ templates/ web UI assets
-data/              graph JSON, vectors, and the agent's wiki workspace
+static/ templates/ web UI assets (incl. the Memory tab)
+data/              graph JSON, vectors, memory.json, and the agent's wiki workspace
 ```
 
 ## Credits
