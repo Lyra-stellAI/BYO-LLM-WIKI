@@ -394,6 +394,52 @@ def resume_review(thread_id: str, *, decision: str, score: float | None = None,
     return _summarize(thread_id, state)
 
 
+# --- non-blocking builds (run the graph in a background thread) --------------
+import threading  # noqa: E402
+
+_jobs: dict = {}
+_jobs_lock = threading.Lock()
+_JOBS_MAX = 50
+
+
+def start_build_async(**kwargs) -> dict:
+    """Kick off a build in a background thread and return ``{job_id, thread_id}``
+    immediately. Poll ``job_status(job_id)`` until ``state`` leaves ``running``.
+
+    The build is checkpointed regardless, so even if the in-memory job entry is
+    lost (restart), the paused thread still surfaces in the review queue."""
+    import uuid as _uuid
+    job_id = _uuid.uuid4().hex
+    tid = kwargs.pop("thread_id", None) or _uuid.uuid4().hex
+    with _jobs_lock:
+        # prune finished jobs so the registry stays small
+        if len(_jobs) > _JOBS_MAX:
+            for k in [k for k, v in list(_jobs.items()) if v.get("state") != "running"][:_JOBS_MAX]:
+                _jobs.pop(k, None)
+        _jobs[job_id] = {"job_id": job_id, "state": "running", "thread_id": tid,
+                         "skill_id": None, "result": None, "error": None}
+
+    def _run():
+        try:
+            res = run_build(thread_id=tid, **kwargs)
+            state = "awaiting_review" if res.get("awaiting_review") else "done"
+            with _jobs_lock:
+                _jobs[job_id].update({"state": state, "result": res,
+                                      "skill_id": (res.get("skill") or {}).get("id")})
+        except Exception as exc:  # noqa: BLE001
+            with _jobs_lock:
+                _jobs[job_id].update({"state": "error", "error": str(exc)})
+
+    threading.Thread(target=_run, name=f"skill-build-{job_id[:8]}", daemon=True).start()
+    return {"job_id": job_id, "thread_id": tid, "state": "running"}
+
+
+def job_status(job_id: str) -> dict | None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        return dict(job) if job else None
+
+
 def get_status(thread_id: str) -> dict:
     """Inspect a thread's current state (next node + whether it awaits review)."""
     snap = get_graph().get_state({"configurable": {"thread_id": thread_id}})

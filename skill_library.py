@@ -499,6 +499,12 @@ def find_skill(query: str, *, statuses: set | None = None) -> dict | None:
     return hits[0] if hits else None
 
 
+def store_updated_at() -> str:
+    """The store's last-modified timestamp — a cheap change token for polling."""
+    with _lock:
+        return _load().get("updated_at", "")
+
+
 def stats() -> dict:
     with _lock:
         data = _load()

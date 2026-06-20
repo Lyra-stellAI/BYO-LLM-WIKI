@@ -548,6 +548,42 @@ def test_graph_revise_cycles_back():
         skill_graph.reset()
 
 
+# --- live-queue change tokens + async build ---------------------------------
+def test_change_tokens():
+    sk.clear()
+    skill_runs.clear()
+    assert isinstance(sk.store_updated_at(), str)
+    assert skill_runs.last_run_at() is None
+    skill_runs.record(kind="build", skill_name="x", trace=False)
+    assert skill_runs.last_run_at() is not None
+    sk.upsert_skill(_good_skill_spec())
+    assert sk.store_updated_at()  # non-empty after a write
+
+
+def test_graph_async_job_runs_to_review():
+    import time as _t
+    import skill_graph
+    os.environ["SKILL_GRAPH_CHECKPOINT"] = "memory"
+    skill_graph.reset()
+    restore = _patch_pipeline_phases()
+    try:
+        job = skill_graph.start_build_async(text="changelog release notes context",
+                                            use_tools=False, run_rubric=False, run_triggering=False)
+        assert job["state"] == "running" and job["job_id"]
+        st = None
+        deadline = _t.time() + 20
+        while _t.time() < deadline:
+            st = skill_graph.job_status(job["job_id"])
+            if st and st["state"] != "running":
+                break
+            _t.sleep(0.1)
+        assert st and st["state"] == "awaiting_review", st
+        assert st["skill_id"] and st["result"]["awaiting_review"] is True
+    finally:
+        restore()
+        skill_graph.reset()
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]

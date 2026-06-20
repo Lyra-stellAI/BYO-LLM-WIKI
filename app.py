@@ -564,6 +564,17 @@ def api_skill_observability():
                     "tracing": skill_tracing.status()})
 
 
+@app.route("/api/skill/changes")
+def api_skill_changes():
+    """A cheap change token for polling: counts + store/run timestamps. Lets the UI
+    refresh the review queue only when something actually changed."""
+    import skill_runs
+    st = skills.stats()
+    return jsonify({"pending_review": st["pending_review"], "total": st["total"],
+                    "accepted": st["accepted"], "store_updated_at": skills.store_updated_at(),
+                    "last_run_at": skill_runs.last_run_at()})
+
+
 @app.route("/api/skill/tracing/init", methods=["POST"])
 def api_skill_tracing_init():
     """Create the dedicated LangSmith project for skill runs (idempotent)."""
@@ -681,6 +692,64 @@ def api_skill_graph_build():
         return jsonify(res)
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": str(e)}), 400
+
+
+def _parse_skill_context(data):
+    """Pull (chunk_ids, text, query, tags) from a build request body."""
+    chunk_ids = data.get("chunk_ids") if isinstance(data.get("chunk_ids"), list) else None
+    tags_in = data.get("tags")
+    tags = ([t.strip() for t in tags_in.split(",") if t.strip()] if isinstance(tags_in, str)
+            else [str(t).strip() for t in tags_in if str(t).strip()] if isinstance(tags_in, list)
+            else None)
+    return (chunk_ids, (data.get("text") or "").strip() or None,
+            (data.get("query") or "").strip() or None, tags)
+
+
+@app.route("/api/skill/graph/build_async", methods=["POST"])
+def api_skill_graph_build_async():
+    """Start a checkpointed LangGraph build in the BACKGROUND; returns a job_id to
+    poll (so the UI isn't blocked while the build runs to the review interrupt)."""
+    mod, err = _skill_graph_or_error()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    chunk_ids, text, query, tags = _parse_skill_context(data)
+    if not (chunk_ids or text or query or tags):
+        return jsonify({"error": "Provide context: chunk_ids, text, query, or tags."}), 400
+    try:
+        job = mod.start_build_async(
+            chunk_ids=chunk_ids, text=text, query=query, tags=tags,
+            where=(data.get("where") or "overall"), goal=(data.get("goal") or "").strip(),
+            provider=(data.get("provider") or "auto").strip().lower(),
+            model=(data.get("model") or "").strip() or None,
+            backend=(data.get("backend") or "").strip().lower() or None,
+            use_tools=bool(data.get("use_tools", True)),
+            run_rubric=bool(data.get("run_rubric", True)),
+            run_triggering=bool(data.get("run_triggering", True)))
+        job["checkpoint"] = mod.checkpoint_backend()
+        return jsonify(job)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/skill/graph/job/<job_id>")
+def api_skill_graph_job(job_id):
+    """Poll a background build: state is running | awaiting_review | done | error."""
+    mod, err = _skill_graph_or_error()
+    if err:
+        return err
+    job = mod.job_status(job_id)
+    if not job:
+        return jsonify({"error": "Unknown job."}), 404
+    out = {"job_id": job_id, "state": job["state"], "thread_id": job["thread_id"],
+           "skill_id": job.get("skill_id"), "error": job.get("error"),
+           "checkpoint": mod.checkpoint_backend()}
+    res = job.get("result") or {}
+    if res:
+        out.update({"awaiting_review": res.get("awaiting_review"), "gate": res.get("gate"),
+                    "status": res.get("status"), "skill": res.get("skill"),
+                    "eval": res.get("eval"), "thread_id": res.get("thread_id", job["thread_id"])})
+    return jsonify(out)
 
 
 @app.route("/api/skill/graph/resume", methods=["POST"])
@@ -1135,4 +1204,5 @@ def api_kg_ingest_files():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    # threaded=True so background skill builds + job-status polls are served concurrently.
+    app.run(host="0.0.0.0", port=port, debug=True, threaded=True)

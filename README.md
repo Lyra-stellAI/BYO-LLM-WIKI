@@ -167,7 +167,9 @@ Graph** (ingest Files/URLs/Text, browse staging + the layer-colored graph,
 MMR toggles), **Memory** (recall, add, reinforce/forget), and **Agent Skills**
 (build a skill from context, watch the eval/gate report, then accept / revise /
 reject from the review queue; toggle **durable ⛓** to run it as a checkpointed
-LangGraph build that pauses for review and can be resumed later).
+LangGraph build that runs in the background, pauses for review, and can be resumed
+later — the queue auto-refreshes and the tab badge pulses as builds finish or get
+resumed).
 
 ## Command line
 
