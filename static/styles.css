@@ -424,6 +424,12 @@ kbd {
 }
 .summary-card h2 { margin: 0 0 14px; font-size: 1.7rem; font-family: var(--sans); font-weight: 700; line-height: 1.25; color: var(--text-strong); }
 .summary-card .summary-body { white-space: pre-wrap; font-size: 0.98rem; max-width: 72ch; }
+.summary-card .summary-body.context-extract {
+  max-height: 360px; overflow-y: auto;
+  padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface-2); font-size: 0.92rem; line-height: 1.5;
+}
+.context-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 
 .spinner {
   display: inline-block; width: 14px; height: 14px;

@@ -48,7 +48,46 @@ async function postJSON(url, body) {
   return data;
 }
 
+function isUrl(text = "") {
+  try {
+    const u = new URL(text.trim());
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch (e) {
+    return false;
+  }
+}
+
+function renderLinkContext(r) {
+  const context = r.context || r.snippet || "";
+  resultsEl.innerHTML = `
+    <article class="summary-card">
+      <div class="meta">
+        <span class="badge">Extracted context</span>
+        <span>${(r.chars || context.length).toLocaleString()} chars extracted</span>
+        <span>Source: <a href="${escapeHTML(r.url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(r.url)}</a></span>
+      </div>
+      <h2>${escapeHTML(r.title || r.url)}</h2>
+      <div class="summary-body context-extract">${escapeHTML(context)}</div>
+      <div class="context-actions">
+        <button class="btn btn-secondary" data-summarize="${escapeHTML(r.url)}">Summarize this</button>
+        <button class="btn btn-accent" data-addkg-context="1">+ KG</button>
+      </div>
+    </article>
+  `;
+  resultsEl.querySelector("[data-summarize]")?.addEventListener("click", () => {
+    queryEl.value = r.url;
+    doSummarize();
+  });
+  resultsEl.querySelector("[data-addkg-context]")?.addEventListener("click", () => {
+    window.kg.openModal({ text: context, source_title: r.title || "", source_url: r.url || "" });
+  });
+}
+
 function renderSearchResults(data) {
+  if (data.kind === "link" && data.results && data.results.length) {
+    renderLinkContext(data.results[0]);
+    return;
+  }
   if (!data.results || data.results.length === 0) {
     resultsEl.innerHTML = `<div class="status">No results found for "${escapeHTML(data.query)}".</div>`;
     return;
@@ -157,7 +196,9 @@ async function doSearch() {
   const query = queryEl.value.trim();
   if (!query) { setStatus("Type something to search.", "error"); return; }
   clearStatus(); resultsEl.innerHTML = ""; setBusy(true);
-  setStatus(`<span class="spinner"></span>Searching for "${escapeHTML(query)}"…`);
+  setStatus(isUrl(query)
+    ? `<span class="spinner"></span>Fetching and extracting context from the link…`
+    : `<span class="spinner"></span>Searching for "${escapeHTML(query)}"…`);
   try {
     const data = await postJSON("/api/search", { query });
     clearStatus();

@@ -166,7 +166,9 @@ memory recall and write-back so deterministic metrics stay comparable.
 ## Using the web UI
 
 ### Read tab
-- **Search** the web (DuckDuckGo) from the input bar.
+- **Search** the web (DuckDuckGo) from the input bar — or paste a **link** and
+  press *Search* to fetch that page and extract its readable context (a URL is a
+  poor search term, so links are fetched instead of keyword-searched).
 - **Summarize a URL** — paste a URL and press *Summarize*; or paste **raw text**
   to summarize that instead. Every search result has a one-click *Summarize this*.
 - **Save a chunk to KG** — paste text and click `+ KG`, or highlight any text in a
@@ -333,7 +335,8 @@ shows the active project when enabled.
 **Read / providers**
 - `GET /api/providers` — configured providers, suggested models, and whether the
   agent stack is installed (`agent_available`).
-- `POST /api/search` — `{ "query" }` → DuckDuckGo results.
+- `POST /api/search` — `{ "query" }` → DuckDuckGo results (`kind: "web"`), or, when
+  the query is a link, the page's extracted context (`kind: "link"`).
 - `POST /api/summarize` — `{ "input": "<url-or-text>", "provider?", "model?" }` →
   page/text summary (`provider` may be `auto` … `mistral`, or `extractive`).
 
