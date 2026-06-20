@@ -1,5 +1,5 @@
 {
-  "description": "Human-in-the-loop calibration for the cross-document synthesis judge. key_points = gold reference each answer is graded against; human_score = a reviewer's 0-1 rating of reviewed_answer. The crossdoc run reports how closely each LLM judge tracks human_score (fresh pairs only; an answer that no longer matches reviewed_answer is flagged stale -> re-review). Seed with `python runner.py --mode rag-crossdoc-labels`, then a human fills in human_score and refines key_points.",
+  "description": "Human-in-the-loop calibration for the cross-document synthesis judge. key_points = gold reference each answer is graded against; human_score = a reviewer's 0-1 rating of reviewed_answer. The crossdoc run reports how closely each LLM judge tracks human_score (fresh pairs only; an answer that no longer matches reviewed_answer is flagged stale -> re-review).",
   "labels": {
     "How do the limitations of public LLM evaluation benchmarks discussed in 'LLM Evaluation Benchmarks' support the argument for trajectory-based evaluation frameworks presented in 'LLM Evaluation Framework: Trajectories vs. Outputs'?": {
       "key_points": [
@@ -27,6 +27,122 @@
       "reviewed_answer": "## Answer\n\nThe context passages do not directly address what zero-day vulnerability discovery capabilities and N-day exploit acceleration findings reveal about the need for trustworthy agent frameworks and agentic misalignment safeguards. \n\nWhile the passages discuss these topics separately, they do not establish a connection between them:\n\n- [6] describes Claude Opus 4.6's improved ability to find high-severity vulnerabilities at scale, establishing an \"inflection point for AI's impact on cybersecurity\"\n- [2] explains how LLMs can accelerate N-day exploit development by automating patch diffing, compressing the time defenders historically had to deploy patches\n- [1] and [8] address trustworthy agent frameworks and the need for multi-layered agentic security defenses\n- [3] and [4] discuss agentic misalignment risks and autonomous attack orchestration\n\nHowever, the passages do not explicitly connect these cybersecurity capability findings to conclusions about what they reveal regarding the necessity of trustworthy agent frameworks or agentic misalignment safeguards. To answer your question fully would require synthesizing insights across these separate research areas in a way the provided context does not do.\n\n## Key sources\n- [6] LLM-discovered 0 days — https://www.anthropic.com/research/zero-days\n- [2] Measuring LLMs' impact on N-day exploits — https://www.anthropic.com/research/n-days\n- [1] Trustworthy agents in practice — https://www.anthropic.com/research/trustworthy-agents\n- [3] Agentic Misalignment — https://www.anthropic.com/research/agentic-misalignment",
       "notes": "Refusal: correctly summarized each source but declined the synthesis the question asks for, even though the retrieved evidence supports it. On this exact answer, deepseek (0.0) and gpt-5.2 (0.1) tracked the human; mistral (0.7) was far too lenient.",
       "reviewed": true
+    },
+    "How do the verification and evaluation approaches described in 'Designing Efficient Verifiers for Legal Agents' relate to the broader loop engineering framework, and what role do verifiers play in the hierarchical feedback loops?": {
+      "key_points": [
+        "Verifiers are part of a hierarchical loop stack in loop engineering that includes agent, verification, event-driven, and hill-climbing loops to progressively automate work and improve agent performance.",
+        "Verifiers serve an evaluation function within the broader loop engineering framework by assessing agent outputs, particularly for complex tasks like legal work.",
+        "Verifier efficiency is critical because verifier costs can be a bottleneck when running agent evaluations and reinforcement learning post-training at scale.",
+        "Verifier costs can be reduced by an order of magnitude through optimization techniques including batching, using open-source models, and prompt tuning while maintaining acceptable accuracy.",
+        "The verification loop operates within a hierarchical feedback system where human oversight can be strategically applied at different levels to build more reliable AI agents."
+      ],
+      "human_score": null,
+      "reviewed_answer": "",
+      "notes": "",
+      "reviewed": false
+    },
+    "Compare how RubricMiddleware for self-evaluation in Deep Agents differs from or complements the human judgment integration approach described in the agent improvement loop guide.": {
+      "key_points": [
+        "RubricMiddleware enables agents to self-evaluate against defined success criteria, while the human judgment approach incorporates domain expert input into the agent improvement loop.",
+        "RubricMiddleware focuses on iterative self-correction of agent outputs, whereas the human judgment guide emphasizes leveraging tacit domain expertise and institutional knowledge from team members.",
+        "RubricMiddleware addresses agents that produce outputs heading in the right direction but falling short, while the human judgment approach strategically incorporates human review into an iterative improvement loop.",
+        "RubricMiddleware is a feature within Deep Agents that automates evaluation and correction, whereas the human judgment approach combines automated evaluations with strategic human review of specific agent components."
+      ],
+      "human_score": null,
+      "reviewed_answer": "",
+      "notes": "",
+      "reviewed": false
+    },
+    "How do traces serve as the foundation for the agent improvement loop, and how does this connect to the Better-Harness system's use of evals as a learning signal?": {
+      "key_points": [
+        "Traces capture agent behavior and serve as the foundation for the agent improvement loop by enabling evaluation, annotation, and targeted improvements.",
+        "Traces are collected from production and other sources, then enriched with automated and human evaluations to identify failure patterns.",
+        "Better-Harness uses evals as a learning signal analogous to training data in machine learning, sourcing evals from production traces.",
+        "Evals encode the desired agent behavior in production and function as a gradient that guides iterative improvements to the agent system.",
+        "The improvement loop enables autonomous hill-climbing with human oversight, where each cycle generates better data and more reliable iteration before deployment."
+      ],
+      "human_score": null,
+      "reviewed_answer": "",
+      "notes": "",
+      "reviewed": false
+    },
+    "What is the relationship between custom agent harnesses and interpreter skills in terms of how they structure agent execution and reliability?": {
+      "key_points": [
+        "A custom agent harness is the scaffolding that connects a model to real-world context, tools, and environments, with its effectiveness depending on how well it fits the specific task at hand.",
+        "Interpreter skills extend agent capabilities by combining TypeScript modules with skill instructions to enable deterministic workflows with greater reliability than model-driven execution alone.",
+        "Interpreter skills allow agents to spawn subagents and manage task graphs, enabling complex procedures to be executed in tested, reviewable code while maintaining model-driven decision-making flexibility.",
+        "Skills can direct the harness itself, not just the model, allowing the interpreter code to communicate directly with the agent loop while the model decides when to call skills and what inputs to provide.",
+        "Agent work becomes more easily evaluated when using interpreter skills because execution can be traced through deterministic code rather than relying solely on whether the agent generally followed instructions."
+      ],
+      "human_score": null,
+      "reviewed_answer": "",
+      "notes": "",
+      "reviewed": false
+    },
+    "Synthesize how AI agent observability, tracing, and evaluation-based monitoring work together as described across the observability and monitoring documents to create a continuous improvement cycle.": {
+      "key_points": [
+        "Tracing captures production observations of agent behavior, but traditional engineering metrics like latency and error rates are insufficient to detect quality issues like hallucinations and wrong answers.",
+        "Evaluation-based monitoring measures whether AI agent outputs are actually correct and useful by assessing output quality against domain expert standards, moving beyond infrastructure-focused metrics.",
+        "Domain expert review and annotation queues connect production traces to structured feedback, enabling subject matter experts to evaluate agent outputs and identify quality problems.",
+        "Problems discovered in live environments through evaluation become permanent tests that prevent the same failures from recurring, creating a feedback loop for systematic improvement.",
+        "The continuous improvement cycle integrates tracing (observation collection), evaluation (quality assessment), and domain expert feedback (annotation) to turn observations into actionable insights for engineers."
+      ],
+      "human_score": null,
+      "reviewed_answer": "",
+      "notes": "",
+      "reviewed": false
+    },
+    "Compare the autonomous task completion capabilities demonstrated in Project Fetch Phase Two with the trustworthy agent framework's requirements for managing risks in autonomous systems.": {
+      "key_points": [
+        "Project Fetch Phase Two demonstrates Claude Opus 4.7 can autonomously complete robotic tasks 20 times faster than the fastest human teams, showing significant autonomous task completion capability.",
+        "Project Fetch Phase Two identifies that Claude excels at programmatic tasks but struggles with precise physical control requiring closed-loop feedback, revealing specific limitations in autonomous physical agency.",
+        "The trustworthy agent framework requires managing risks from autonomous systems that can execute tasks across multiple applications with reduced human oversight.",
+        "The trustworthy agent framework addresses the risk that agents can misread users' intent and take actions with unintended consequences due to operating with less human oversight than chatbots.",
+        "The trustworthy agent framework must defend against prompt injection cyberattacks that attempt to trick models in autonomous systems."
+      ],
+      "human_score": null,
+      "reviewed_answer": "",
+      "notes": "",
+      "reviewed": false
+    },
+    "How do the findings about AI-enabled cyber threats in the ATT&CK Navigator analysis inform the design of evaluation frameworks like SHADE-Arena for detecting sabotage and evasion in LLM agents?": {
+      "key_points": [
+        "The ATT&CK Navigator analysis identifies that highest-risk threat actors are distinguished by their ability to use AI agents for autonomous orchestration of multi-stage attacks, revealing the sophistication level that evaluation frameworks must test for.",
+        "SHADE-Arena is designed to test whether LLM agents can perform complex sabotage tasks while evading detection by monitoring systems, directly addressing the need to evaluate agent capabilities that the ATT&CK analysis shows threat actors are developing.",
+        "The ATT&CK Navigator introduces a novel risk-scoring framework for assessing AI-enabled cyber threats, which informs the design of evaluation frameworks like SHADE-Arena that must measure both sabotage capability and evasion of monitoring systems.",
+        "SHADE-Arena identifies important gaps in monitoring capabilities that need improvement as AI agents become more capable, reflecting insights from the ATT&CK analysis about the evolving sophistication of AI-enabled attacks."
+      ],
+      "human_score": null,
+      "reviewed_answer": "",
+      "notes": "",
+      "reviewed": false
+    },
+    "How do the infrastructure requirements for supporting AI agents in biology relate to the broader challenges of building reliable agentic systems across different domains?": {
+      "key_points": [
+        "AI agents in biology require redesigned infrastructure to function as reliable users, as demonstrated through the case study of viral sequence retrieval from NCBI Virus.",
+        "Current AI models struggle with inconsistent accuracy on biological data retrieval tasks, preventing them from reliably constructing datasets without additional support.",
+        "Adding deterministic retrieval layers (such as gget virus) dramatically improves agent performance on biological tasks, showing that infrastructure design directly enables agent reliability.",
+        "Building trustworthy agents across domains requires managing risks including agents misreading user intent and taking unintended actions due to increased autonomy.",
+        "AI agents are vulnerable to prompt injection cyberattacks that attempt to manipulate their behavior, representing a cross-domain security challenge for agentic systems.",
+        "Reliable agentic systems require a governance framework with technical defenses and industry-wide standards, not just individual domain solutions."
+      ],
+      "human_score": null,
+      "reviewed_answer": "",
+      "notes": "",
+      "reviewed": false
+    },
+    "Across the exploit evaluation research (ExploitBench, ExploitGym, zero-days, N-days), what patterns emerge about LLM capabilities that should inform the design of evaluation metrics and monitoring systems for production agents?": {
+      "key_points": [
+        "LLMs demonstrate step-change advances in exploit development capabilities, including converting vulnerabilities into exploit primitives and combining them into complete end-to-end attack chains, requiring evaluation metrics that capture multi-stage attack complexity.",
+        "LLMs can now discover high-severity zero-day vulnerabilities at scale in open-source code, indicating evaluation systems must distinguish between N-day and zero-day discovery capabilities rather than treating all vulnerability findings equivalently.",
+        "Generic benchmarks are insufficient for measuring production agent quality; evaluation metrics must be tailored to business-specific and security-specific requirements rather than relying on standard NLP metrics.",
+        "Production monitoring systems should connect evaluation traces to systematic improvements through human expertise, as one-off fixes are inadequate for managing evolving LLM cybersecurity capabilities.",
+        "Evaluation frameworks must assess whether agents meet domain-specific safety requirements like preventing misuse, not just measuring technical capability, given the dual-use nature of exploit and vulnerability discovery."
+      ],
+      "human_score": null,
+      "reviewed_answer": "",
+      "notes": "",
+      "reviewed": false
     }
   }
 }

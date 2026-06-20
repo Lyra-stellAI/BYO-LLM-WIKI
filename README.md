@@ -298,8 +298,8 @@ The single-judge path (`providers.resolve_judge`) picks a different-family model
 the cross-document eval goes further with a **judge panel** of five distinct
 families (`providers.judge_panel`):
 
-`gpt-5.2` · `qwen3.7-max` · `deepseekV3-chat` · `gemini-3.5-flash` ·
-`mistral-large-latest`
+`gpt-5.2-2025-12-11` · `qwen3.7-plus` · `deepseek-v4-flash` · `gemini-3.5-flash` ·
+`mistral-large-2512`
 
 Each scores its own `correctness_<model>` column plus a panel mean, averaging out
 any single model's strictness. Only configured providers join the panel, so a
