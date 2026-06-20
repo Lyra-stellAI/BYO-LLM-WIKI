@@ -284,11 +284,32 @@ list,recall,add,feedback}`), **RAG** (`/rag/{stats,ingest,search,ask,eval,
 experiment,dataset,ragas,crossdoc,crossdoc/labels}`), and **skills**
 (`/skill/{stats,list,pending,build,observability,runs,backends,tracing/init}`, the
 LangGraph endpoints `/skill/graph/{build,resume,status}`, plus `/skill/<id>` and
-`/skill/<id>/{eval,review,rebuild,refine,export}`). Most accept `{provider?,
+`/skill/<id>/{eval,review,rebuild,refine,export}`), and **MCP**
+(`/mcp/{status,call,write,ingest}`). Most accept `{provider?,
 model?}`; cross-doc returns `judge_alignment` when human labels exist, and
 `/skill/build` (accepts `use_tools` and `backend` = `pipeline` | `claude_code`)
 returns every phase plus the eval/gate report and an observability summary
 (timings, tokens, tool calls, cost).
+
+## Connecting tools (MCP)
+
+The agents can connect to external **MCP** servers (Supabase, GitHub, fetch, …),
+and BYO-WIKI can run **as** an MCP server. Both are opt-in and local-first by
+default. Enable servers with `MCP_ENABLED`; read tools join the curating agent and
+the skill-builder, and `mcp-ingest` stages an MCP read tool's output into the KG.
+**Writes are deny-by-default** — a write tool runs only via `/api/mcp/write`
+(or `mcp-call --confirm`) with `MCP_ALLOW_WRITES=1` **and** explicit human approval.
+The hosted Supabase MCP is HTTPS, so it works even where direct Postgres is blocked.
+
+```bash
+pip install langchain-mcp-adapters mcp
+export MCP_ENABLED=supabase SUPABASE_ACCESS_TOKEN=… SUPABASE_PROJECT_REF=…
+python runner.py --mode mcp-list                              # enabled servers + tools
+python runner.py --mode mcp-ingest --server supabase --tool list_tables --args '{}'
+python runner.py --mode mcp-serve                            # expose BYO-WIKI as an MCP server
+```
+
+See `docs/mcp-proposal.md` for the full design.
 
 ## Configuration
 
@@ -310,6 +331,7 @@ Set provider keys (above) plus, for tracing/eval:
 | `CLAUDE_CODE_BIN` / `CLAUDE_CODE_MODEL` | Claude Code CLI path + model for the `claude_code` backend. |
 | `SKILL_TRACING` / `LANGSMITH_SKILL_PROJECT` | export skill runs to LangSmith + OTel, in their own project. |
 | `SKILL_GRAPH_CHECKPOINT` | LangGraph checkpoint store: `sqlite` (default) / `postgres` / `memory`. |
+| `MCP_ENABLED` / `MCP_ALLOW_WRITES` | enable external MCP servers; allow (gated) write tools. |
 | `PORT` | bind port (default 5000). |
 
 `.env` is gitignored — never commit real keys. See `.env.example` for the full list.
@@ -323,6 +345,7 @@ memory.py memory_tools.py   cross-session memory (layer 6)
 skill_library.py skill_eval.py skill_agent.py skill_tools.py   agent-skill build loop (layer 7)
 skill_runtime.py skill_runs.py skill_claude_agent.py skill_tracing.py   tool-use loop · observability · Claude Code subprocess · LangSmith/OTel export
 skill_graph.py          LangGraph StateGraph: durable human-in-the-loop + refine cycle
+mcp_config.py mcp_tools.py mcp_server.py   MCP: server registry · client (gated) · BYO-WIKI as an MCP server
 knowledge_graph.py      multi-layer graph store + queries
 ingestion.py extraction.py enrich.py   chunking, entity/relation/topic extraction
 pipeline.py embeddings.py vectorstore.py   contextual ingest + HNSW index + MMR
