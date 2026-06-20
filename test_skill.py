@@ -548,6 +548,84 @@ def test_graph_revise_cycles_back():
         skill_graph.reset()
 
 
+# --- live-queue change tokens + async build ---------------------------------
+def test_change_tokens():
+    sk.clear()
+    skill_runs.clear()
+    assert isinstance(sk.store_updated_at(), str)
+    assert skill_runs.last_run_at() is None
+    skill_runs.record(kind="build", skill_name="x", trace=False)
+    assert skill_runs.last_run_at() is not None
+    sk.upsert_skill(_good_skill_spec())
+    assert sk.store_updated_at()  # non-empty after a write
+
+
+def test_graph_async_job_runs_to_review():
+    import time as _t
+    import skill_graph
+    os.environ["SKILL_GRAPH_CHECKPOINT"] = "memory"
+    skill_graph.reset()
+    restore = _patch_pipeline_phases()
+    try:
+        job = skill_graph.start_build_async(text="changelog release notes context",
+                                            use_tools=False, run_rubric=False, run_triggering=False)
+        assert job["state"] == "running" and job["job_id"]
+        st = None
+        deadline = _t.time() + 20
+        while _t.time() < deadline:
+            st = skill_graph.job_status(job["job_id"])
+            if st and st["state"] != "running":
+                break
+            _t.sleep(0.1)
+        assert st and st["state"] == "awaiting_review", st
+        assert st["skill_id"] and st["result"]["awaiting_review"] is True
+    finally:
+        restore()
+        skill_graph.reset()
+
+
+# --- Postgres checkpointer (env-gated, SQLite fallback) ----------------------
+def test_pg_conninfo_and_schema():
+    import skill_graph
+    keys = ("SKILL_GRAPH_DB_URL", "SUPABASE_DB_URL", "SKILL_GRAPH_PG_SCHEMA")
+    saved = {k: os.environ.get(k) for k in keys}
+    try:
+        for k in keys:
+            os.environ.pop(k, None)
+        assert skill_graph._pg_conninfo() is None
+        os.environ["SUPABASE_DB_URL"] = "postgresql://supabase/x"
+        assert skill_graph._pg_conninfo() == "postgresql://supabase/x"
+        os.environ["SKILL_GRAPH_DB_URL"] = "postgresql://own/y"
+        assert skill_graph._pg_conninfo() == "postgresql://own/y"      # own var wins
+        assert skill_graph._pg_schema() == "skill_graph"               # default
+        os.environ["SKILL_GRAPH_PG_SCHEMA"] = "my-schema; drop"
+        assert skill_graph._pg_schema() == "myschemadrop"              # sanitized identifier
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+
+
+def test_postgres_checkpointer_falls_back_to_sqlite():
+    import skill_graph
+    keys = ("SKILL_GRAPH_CHECKPOINT", "SKILL_GRAPH_DB_URL", "SUPABASE_DB_URL")
+    saved = {k: os.environ.get(k) for k in keys}
+    try:
+        os.environ["SKILL_GRAPH_CHECKPOINT"] = "postgres"
+        os.environ.pop("SKILL_GRAPH_DB_URL", None)
+        os.environ.pop("SUPABASE_DB_URL", None)
+        skill_graph.reset()
+        saver = skill_graph._checkpointer()
+        assert type(saver).__name__ == "SqliteSaver"                   # graceful fallback
+        assert skill_graph._effective_checkpoint == "sqlite"
+        st = skill_graph.checkpoint_status()
+        assert st["requested"] == "postgres" and st["effective"] == "sqlite"
+        assert st["postgres_url_set"] is False
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        skill_graph.reset()
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]

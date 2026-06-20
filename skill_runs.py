@@ -142,6 +142,13 @@ def get_run(run_id: str) -> dict | None:
     return None
 
 
+def last_run_at() -> str | None:
+    """Timestamp of the most recent run — a cheap change token for polling."""
+    with _lock:
+        runs = _load()["runs"]
+    return runs[-1].get("at") if runs else None
+
+
 def _avg(values: list) -> float | None:
     vals = [v for v in values if isinstance(v, (int, float))]
     return round(sum(vals) / len(vals), 3) if vals else None

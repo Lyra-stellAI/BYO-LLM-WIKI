@@ -158,6 +158,24 @@ arrives (`accept` finalizes, `reject` ends, `revise` loops back through `codeact
 with the notes). Checkpoints persist to SQLite by default (`data/skill_graph.sqlite`),
 swappable to Postgres (e.g. Supabase) or in-memory via `SKILL_GRAPH_CHECKPOINT`.
 
+For durable, shared, cross-machine resume, point it at Postgres:
+
+```bash
+pip install "langgraph-checkpoint-postgres" "psycopg[binary]" psycopg-pool
+export SKILL_GRAPH_CHECKPOINT=postgres
+export SKILL_GRAPH_DB_URL="$SUPABASE_DB_URL"   # or any Postgres URL
+# build on one machine (pauses), resume on another — same DB:
+python runner.py --mode skill-graph-build --text "…" --goal "…"
+python runner.py --mode skill-graph-resume --thread-id <tid> --decision accept
+```
+
+Checkpoint tables go in their own schema (`SKILL_GRAPH_PG_SCHEMA`, default
+`skill_graph`) over a connection pool; prepared statements are disabled and
+connections run autocommit, so the **Supabase transaction pooler (port 6543)**
+works as well as a direct/session connection. If the DB is unreachable or the deps
+are missing, it logs a note and **falls back to SQLite** — defaults stay local-first.
+`runner.py --mode skill-backends` prints the effective checkpoint backend.
+
 ## Web UI
 
 Tabs for **Read** (web search, or paste a link to fetch + extract its context;
@@ -167,7 +185,9 @@ Graph** (ingest Files/URLs/Text, browse staging + the layer-colored graph,
 MMR toggles), **Memory** (recall, add, reinforce/forget), and **Agent Skills**
 (build a skill from context, watch the eval/gate report, then accept / revise /
 reject from the review queue; toggle **durable ⛓** to run it as a checkpointed
-LangGraph build that pauses for review and can be resumed later).
+LangGraph build that runs in the background, pauses for review, and can be resumed
+later — the queue auto-refreshes and the tab badge pulses as builds finish or get
+resumed).
 
 ## Command line
 

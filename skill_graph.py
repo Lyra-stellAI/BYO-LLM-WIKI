@@ -31,6 +31,8 @@ default (``data/skill_graph.sqlite``), swappable to Postgres (e.g. your Supabase
 from __future__ import annotations
 
 import os
+import re
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -266,25 +268,88 @@ def _route_decision(state: SkillState) -> str:
 
 
 # --- graph construction + checkpointer --------------------------------------
-_graph_cache: dict = {"graph": None, "saver": None}
+_graph_cache: dict = {"graph": None, "saver": None, "pg_pool": None}
+_effective_checkpoint: str | None = None
+
+
+def _pg_conninfo() -> str | None:
+    """Postgres connection string for checkpoints (own var wins; else Supabase)."""
+    return (os.environ.get("SKILL_GRAPH_DB_URL") or os.environ.get("SUPABASE_DB_URL") or "").strip() or None
+
+
+def _pg_schema() -> str:
+    """Dedicated schema for checkpoint tables (sanitized to a safe identifier)."""
+    s = os.environ.get("SKILL_GRAPH_PG_SCHEMA", "skill_graph").strip()
+    return re.sub(r"[^a-zA-Z0-9_]", "", s) or "skill_graph"
+
+
+def _make_postgres_saver():
+    """Build a durable Postgres checkpointer over a connection pool.
+
+    Handles the Supabase/pgbouncer gotcha: prepared statements are disabled
+    (``prepare_threshold=None``) and connections run ``autocommit`` so the
+    transaction pooler (port 6543) works as well as a direct/session connection.
+    Checkpoint tables live in their own schema (``SKILL_GRAPH_PG_SCHEMA``) so they
+    don't collide with anything else in the database. Raises on any failure so the
+    caller can fall back to SQLite."""
+    conninfo = _pg_conninfo()
+    if not conninfo:
+        raise RuntimeError("no SKILL_GRAPH_DB_URL / SUPABASE_DB_URL set")
+    from psycopg_pool import ConnectionPool
+    from psycopg.rows import dict_row
+    from langgraph.checkpoint.postgres import PostgresSaver
+
+    schema = _pg_schema()
+
+    def _configure(conn):
+        conn.autocommit = True
+        if schema and schema != "public":
+            with conn.cursor() as cur:
+                cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+                cur.execute(f'SET search_path TO "{schema}", public')
+
+    pool = ConnectionPool(
+        conninfo=conninfo,
+        min_size=1,
+        max_size=int(os.environ.get("SKILL_GRAPH_PG_POOL", "4")),
+        kwargs={"autocommit": True, "prepare_threshold": None,
+                "row_factory": dict_row, "connect_timeout": 10},
+        configure=_configure,
+        open=False,
+    )
+    try:
+        pool.open(wait=True, timeout=15)  # raises PoolTimeout if the DB is unreachable
+        saver = PostgresSaver(pool)
+        saver.setup()  # idempotent: creates the checkpoint tables in the schema
+    except Exception:
+        # Close the pool so its background worker thread doesn't leak on fallback.
+        try:
+            pool.close()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+    _graph_cache["pg_pool"] = pool
+    return saver
 
 
 def _checkpointer():
+    """Resolve the LangGraph checkpointer. Default SQLite (local-first); ``memory``
+    or ``postgres`` via SKILL_GRAPH_CHECKPOINT. Postgres failures fall back to
+    SQLite with a stderr note, so a misconfigured DB never blocks builds."""
+    global _effective_checkpoint
     mode = os.environ.get("SKILL_GRAPH_CHECKPOINT", "sqlite").strip().lower()
     if mode == "memory":
         from langgraph.checkpoint.memory import MemorySaver
+        _effective_checkpoint = "memory"
         return MemorySaver()
     if mode == "postgres":
         try:
-            from langgraph.checkpoint.postgres import PostgresSaver
-            conn = os.environ.get("SKILL_GRAPH_DB_URL") or os.environ.get("SUPABASE_DB_URL")
-            saver = PostgresSaver.from_conn_string(conn)
-            if hasattr(saver, "__enter__"):
-                saver = saver.__enter__()
-            saver.setup()
+            saver = _make_postgres_saver()
+            _effective_checkpoint = "postgres"
             return saver
-        except Exception:  # noqa: BLE001  (fall back to local sqlite)
-            pass
+        except Exception as exc:  # noqa: BLE001  (fall back to local sqlite)
+            print(f"[skill_graph] Postgres checkpoint unavailable ({type(exc).__name__}: {exc}); "
+                  f"falling back to SQLite.", file=sys.stderr)
     import sqlite3
     from langgraph.checkpoint.sqlite import SqliteSaver
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -295,6 +360,7 @@ def _checkpointer():
         saver.setup()
     except Exception:  # noqa: BLE001
         pass
+    _effective_checkpoint = "sqlite"
     return saver
 
 
@@ -338,8 +404,15 @@ def get_graph():
 
 def reset() -> None:
     """Drop the cached compiled graph + checkpointer (used by tests)."""
+    pool = _graph_cache.get("pg_pool")
+    if pool is not None:
+        try:
+            pool.close()
+        except Exception:  # noqa: BLE001
+            pass
     _graph_cache["graph"] = None
     _graph_cache["saver"] = None
+    _graph_cache["pg_pool"] = None
 
 
 # --- entrypoints -------------------------------------------------------------
@@ -394,6 +467,52 @@ def resume_review(thread_id: str, *, decision: str, score: float | None = None,
     return _summarize(thread_id, state)
 
 
+# --- non-blocking builds (run the graph in a background thread) --------------
+import threading  # noqa: E402
+
+_jobs: dict = {}
+_jobs_lock = threading.Lock()
+_JOBS_MAX = 50
+
+
+def start_build_async(**kwargs) -> dict:
+    """Kick off a build in a background thread and return ``{job_id, thread_id}``
+    immediately. Poll ``job_status(job_id)`` until ``state`` leaves ``running``.
+
+    The build is checkpointed regardless, so even if the in-memory job entry is
+    lost (restart), the paused thread still surfaces in the review queue."""
+    import uuid as _uuid
+    job_id = _uuid.uuid4().hex
+    tid = kwargs.pop("thread_id", None) or _uuid.uuid4().hex
+    with _jobs_lock:
+        # prune finished jobs so the registry stays small
+        if len(_jobs) > _JOBS_MAX:
+            for k in [k for k, v in list(_jobs.items()) if v.get("state") != "running"][:_JOBS_MAX]:
+                _jobs.pop(k, None)
+        _jobs[job_id] = {"job_id": job_id, "state": "running", "thread_id": tid,
+                         "skill_id": None, "result": None, "error": None}
+
+    def _run():
+        try:
+            res = run_build(thread_id=tid, **kwargs)
+            state = "awaiting_review" if res.get("awaiting_review") else "done"
+            with _jobs_lock:
+                _jobs[job_id].update({"state": state, "result": res,
+                                      "skill_id": (res.get("skill") or {}).get("id")})
+        except Exception as exc:  # noqa: BLE001
+            with _jobs_lock:
+                _jobs[job_id].update({"state": "error", "error": str(exc)})
+
+    threading.Thread(target=_run, name=f"skill-build-{job_id[:8]}", daemon=True).start()
+    return {"job_id": job_id, "thread_id": tid, "state": "running"}
+
+
+def job_status(job_id: str) -> dict | None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        return dict(job) if job else None
+
+
 def get_status(thread_id: str) -> dict:
     """Inspect a thread's current state (next node + whether it awaits review)."""
     snap = get_graph().get_state({"configurable": {"thread_id": thread_id}})
@@ -404,4 +523,27 @@ def get_status(thread_id: str) -> dict:
 
 
 def checkpoint_backend() -> str:
+    """The requested checkpoint mode (sqlite | postgres | memory)."""
     return os.environ.get("SKILL_GRAPH_CHECKPOINT", "sqlite").strip().lower()
+
+
+def _postgres_sdk_available() -> bool:
+    try:
+        import psycopg_pool  # noqa: F401
+        import langgraph.checkpoint.postgres  # noqa: F401
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def checkpoint_status() -> dict:
+    """Report the checkpoint configuration (for the UI/CLI): requested mode, the
+    effective backend once a graph has been built, and whether Postgres is usable."""
+    return {
+        "requested": checkpoint_backend(),
+        "effective": _effective_checkpoint,
+        "postgres_url_set": bool(_pg_conninfo()),
+        "postgres_sdk": _postgres_sdk_available(),
+        "pg_schema": _pg_schema(),
+        "sqlite_path": os.environ.get("SKILL_GRAPH_DB", str(DATA_DIR / "skill_graph.sqlite")),
+    }

@@ -11,6 +11,8 @@
   const filterEl = $("#skillFilter");
   const statusEl = $("#skillStatus");
   const tabCount = $("#skillTabCount");
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const skillTabActive = () => !!document.querySelector('#tab-skill.active');
 
   async function postJSON(url, body, method = "POST") {
     const res = await fetch(url, {
@@ -23,6 +25,16 @@
     return data;
   }
 
+  function setTabBadge(pending) {
+    if (pending) { tabCount.textContent = pending; tabCount.classList.remove("hidden"); }
+    else { tabCount.classList.add("hidden"); }
+  }
+
+  function pulseTabBadge() {
+    tabCount.classList.add("skill-badge-pulse");
+    setTimeout(() => tabCount.classList.remove("skill-badge-pulse"), 3500);
+  }
+
   function applyStats(s) {
     if (!s) return;
     $("#skillTotal").textContent = s.total ?? 0;
@@ -33,8 +45,7 @@
     const align = s.gate_human_alignment;
     $("#skillAlign").textContent = (align == null)
       ? "gate↔human —" : `gate↔human ${align}`;
-    if (s.pending_review) { tabCount.textContent = s.pending_review; tabCount.classList.remove("hidden"); }
-    else { tabCount.classList.add("hidden"); }
+    setTabBadge(s.pending_review);
     const recall = s.embeddings ? "semantic recall" : "keyword recall (set OPENAI_API_KEY for semantic)";
     statusEl.textContent = `${s.accepted ?? 0} live · ${s.pending_review ?? 0} to review · ${recall}`;
     statusEl.className = "provider-status " + (s.embeddings ? "ok" : "warn");
@@ -197,16 +208,33 @@
     const s = res.skill || {};
     const ev = res.eval || {};
     const det = ev.deterministic || {};
+    const paused = !!res.awaiting_review;
     buildOut.classList.remove("hidden");
     buildOut.innerHTML = `
-      <h4>⛓ Durable build paused for review — “${esc(s.name)}” ${statusBadge(res.status || s.status)} ${gateBadge(res.gate)}</h4>
+      <h4>⛓ ${paused ? "Durable build paused for review" : "Durable build finished"} —
+        “${esc(s.name || "")}” ${statusBadge(res.status || s.status)} ${gateBadge(res.gate)}</h4>
       <div class="cite"><strong>Thread.</strong> <code>${esc(res.thread_id || "")}</code>
         <span class="kg-tag">checkpoint: ${esc(res.checkpoint || "sqlite")}</span></div>
       <div class="cite"><strong>Description.</strong> ${esc(s.description || "")}</div>
       <div class="cite"><strong>Eval.</strong> deterministic ${esc(String(det.passed))}/${esc(String(det.total))}
         · rubric mean ${esc(String(ev.rubric_mean ?? "—"))}</div>
-      <div class="ask-note">Checkpointed and waiting. Decide in the review queue below
-        (accept / revise / reject) — even later, or after a restart.</div>`;
+      <div class="ask-note">${paused
+        ? "Checkpointed and waiting. Decide in the review queue below (accept / revise / reject) — even later, or after a restart."
+        : "The gate ended this build; revise the context/goal and rebuild."}</div>`;
+  }
+
+  async function pollJob(jobId, threadId) {
+    const short = (threadId || "").slice(0, 8);
+    for (let i = 0; i < 180; i++) {            // ~6 min cap at 2s
+      await sleep(2000);
+      let j;
+      try { j = await fetch(`/api/skill/graph/job/${encodeURIComponent(jobId)}`).then((r) => r.json()); }
+      catch (e) { continue; }
+      if (j.state && j.state !== "running") return j;
+      buildProg.innerHTML = `<span class="spinner"></span>⛓ building… (thread ` +
+        `${esc(j.thread_id ? j.thread_id.slice(0, 8) : short)}) — understand → analyze → codeact → eval → gate`;
+    }
+    return { state: "error", error: "build timed out (still running in the background)" };
   }
 
   async function doBuild() {
@@ -225,21 +253,29 @@
     buildProg.className = "ingest-progress";
     buildProg.innerHTML = `<span class="spinner"></span>${durable ? "⛓ " : ""}understand → analyze → codeact → eval → gate…`;
     buildOut.classList.add("hidden");
+    const body = {
+      text: text || undefined,
+      query: query || undefined,
+      tags: tags || undefined,
+      goal: $("#skillGoal").value.trim() || undefined,
+      run_rubric: $("#skillRubric").checked,
+      use_tools: $("#skillTools").checked,
+      backend: $("#skillBackend").value || undefined,
+    };
     try {
-      const res = await postJSON(durable ? "/api/skill/graph/build" : "/api/skill/build", {
-        text: text || undefined,
-        query: query || undefined,
-        tags: tags || undefined,
-        goal: $("#skillGoal").value.trim() || undefined,
-        run_rubric: $("#skillRubric").checked,
-        use_tools: $("#skillTools").checked,
-        backend: $("#skillBackend").value || undefined,
-      });
-      buildProg.className = "ingest-progress ok";
-      if (durable && res.awaiting_review) {
-        buildProg.textContent = `Paused for review (checkpoint: ${res.checkpoint || "sqlite"}).`;
+      if (durable) {
+        // Non-blocking: kick off a background build, then poll the job to the interrupt.
+        const job = await postJSON("/api/skill/graph/build_async", body);
+        const res = await pollJob(job.job_id, job.thread_id);
+        if (res.state === "error") throw new Error(res.error || "Build failed.");
+        buildProg.className = "ingest-progress ok";
+        buildProg.textContent = res.awaiting_review
+          ? `Paused for review (checkpoint: ${res.checkpoint || "sqlite"}).`
+          : `Build finished: ${res.status}.`;
         renderDurableResult(res);
       } else {
+        const res = await postJSON("/api/skill/build", body);
+        buildProg.className = "ingest-progress ok";
         buildProg.textContent = `Drafted and evaluated (gate: ${res.gate}).`;
         renderBuildResult(res);
       }
@@ -324,15 +360,39 @@
     }
   });
 
+  // --- live review queue: poll a cheap change token; refresh or notify on change
+  let queueSig = null;
+  let lastPending = null;
+  async function pollQueue() {
+    if (document.hidden) return;
+    let c;
+    try { c = await fetch("/api/skill/changes").then((r) => r.json()); }
+    catch (e) { return; }
+    const sig = `${c.pending_review}|${c.total}|${c.accepted}|${c.store_updated_at}|${c.last_run_at}`;
+    if (queueSig !== null && sig !== queueSig) {
+      if (skillTabActive()) {
+        await loadList();                       // visible → refresh the queue in place
+      } else {
+        setTabBadge(c.pending_review);          // elsewhere → update + pulse the tab badge
+        if (lastPending != null && c.pending_review > lastPending) pulseTabBadge();
+      }
+    }
+    lastPending = c.pending_review;
+    queueSig = sig;
+  }
+
   buildBtn.addEventListener("click", doBuild);
   $("#skillRefresh").addEventListener("click", loadList);
   $("#skillObsRefresh").addEventListener("click", loadObservability);
   filterEl.addEventListener("change", loadList);
 
   document.querySelectorAll('.tab[data-tab="skill"]').forEach((t) =>
-    t.addEventListener("click", loadList));
+    t.addEventListener("click", () => { loadList(); pollQueue(); }));
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) pollQueue(); });
+  setInterval(pollQueue, 8000);
 
   loadBackends();
   loadStats();
   loadList();
+  pollQueue();
 })();

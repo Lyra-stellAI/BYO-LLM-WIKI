@@ -649,6 +649,9 @@ kbd {
   background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm);
   padding: 10px 12px; max-height: 360px; overflow: auto; color: var(--text);
 }
+/* Pulse the tab badge when the review queue gains an item while you're elsewhere. */
+@keyframes skillBadgePulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.45); } }
+.tab-count.skill-badge-pulse { animation: skillBadgePulse 0.85s ease-in-out 3; }
 
 /* --- Footer --------------------------------------------------------------- */
 .site-footer {
