@@ -63,6 +63,26 @@ def test_write_tool_classification():
     assert mcp_config.is_write_tool("github", "get_file_contents") is False
 
 
+def test_supabase_writability_tracks_read_only():
+    """The client gate must follow the server's read_only scope, not drift from it:
+    opening the server for writes (SUPABASE_MCP_READ_ONLY=false) must re-arm the
+    confirm-gate on mutating tools."""
+    saved = {"SUPABASE_MCP_READ_ONLY": os.environ.get("SUPABASE_MCP_READ_ONLY")}
+    try:
+        os.environ["SUPABASE_MCP_READ_ONLY"] = "true"
+        assert mcp_config.is_writable_server("supabase") is False
+        assert mcp_config.is_write_tool("supabase", "execute_sql") is False
+        os.environ["SUPABASE_MCP_READ_ONLY"] = "false"
+        assert mcp_config.is_writable_server("supabase") is True
+        assert mcp_config.is_write_tool("supabase", "execute_sql") is True
+        assert mcp_config.is_write_tool("supabase", "apply_migration") is True
+        # reads stay reads even when the server is writable
+        assert mcp_config.is_write_tool("supabase", "list_tables") is False
+        assert mcp_config.status()["servers"]["supabase"]["writable"] is True
+    finally:
+        _restore(saved)
+
+
 # --- write gating ------------------------------------------------------------
 def test_execute_write_is_gated():
     saved = {"MCP_ALLOW_WRITES": os.environ.get("MCP_ALLOW_WRITES")}

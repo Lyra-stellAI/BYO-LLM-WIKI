@@ -32,7 +32,7 @@ DEFAULT_SERVERS: dict[str, dict] = {
                 "&read_only=${SUPABASE_MCP_READ_ONLY:-true}"
                 "&features=${SUPABASE_MCP_FEATURES:-database,docs}"),
         "headers": {"Authorization": "Bearer ${SUPABASE_ACCESS_TOKEN}"},
-        "writable": False,  # read_only=true on the server
+        "writable": False,  # fallback; real value tracks read_only= (is_writable_server)
         "requires": ["SUPABASE_ACCESS_TOKEN", "SUPABASE_PROJECT_REF"],
     },
     "github": {
@@ -125,7 +125,20 @@ def client_config() -> dict[str, dict]:
 
 
 def is_writable_server(name: str) -> bool:
-    return bool(_catalog().get(name, {}).get("writable"))
+    spec = _catalog().get(name)
+    if not spec:
+        return False
+    # When an HTTP endpoint carries an explicit ``read_only`` scope, that scope is
+    # the source of truth and overrides the static flag: a read-only server cannot
+    # write (gating is moot) and a server opened for writes MUST be gated. This
+    # keeps the client-side confirm-gate in lock-step with the server's own scope
+    # (e.g. SUPABASE_MCP_READ_ONLY), so the two never drift apart.
+    url = spec.get("url")
+    if url:
+        m = re.search(r"[?&]read_only=([^&]*)", _resolve(url))
+        if m:
+            return not _truthy(m.group(1))
+    return bool(spec.get("writable"))
 
 
 def is_write_tool(server: str, tool_name: str) -> bool:
@@ -146,7 +159,7 @@ def status() -> dict:
             "enabled": name in en,
             "configurable": not missing,
             "missing_vars": missing,
-            "writable": bool(spec.get("writable")),
+            "writable": is_writable_server(name),
             "transport": spec.get("transport", "stdio"),
         }
     return {
