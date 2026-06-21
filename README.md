@@ -25,8 +25,6 @@ store is plain JSON/SQLite under `data/`; cloud is opt-in.
   sub-agent pipeline (understand → analyze → author → eval → gate → refine). Authored by
   the latest Claude in-process or via the **Claude Code CLI as a subprocess**, scored by a
   deterministic + rubric panel, and **gated behind human review** before it joins the library.
-- **Six LLM providers, one key** — Claude, OpenAI, Qwen, DeepSeek, Gemini, Mistral, chosen
-  per request. No key falls back to a local extractive summarizer.
 - **MCP, both directions** — connect agents to external MCP servers (Supabase, GitHub, …)
   and run BYO-WIKI *as* an MCP server. Reads join the agent; **writes are deny-by-default**.
 
