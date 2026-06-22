@@ -1,6 +1,7 @@
 # Build Your Own WIKI
 
-<img width="1695" height="928" alt="BYO-WIKI" src="https://github.com/user-attachments/assets/0b73a45f-65e8-4170-ab05-474049fc6a77" />
+<img width="1672" height="941" alt="ChatGPT Image Jun 22, 2026, 01_55_25 AM" src="https://github.com/user-attachments/assets/5e5243b5-9614-4f5d-9cc2-b54b492a8fe8" />
+
 
 Turn the web, your files, and loose notes into a **personal wiki** that an LLM agent
 keeps coherent: search and summarize pages, ingest them into a contextual vector
