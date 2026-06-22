@@ -103,6 +103,26 @@ def test_persistence_on_disk():
     assert memory.stats()["total"] == 1
 
 
+def test_backend_local_by_default():
+    memory._STORE = None
+    assert memory.get_store().backend_name == "local"
+    assert memory.stats()["backend"] == "local"
+
+
+def test_supabase_backend_falls_back_to_local():
+    memory._STORE = None
+    os.environ["MEMORY_BACKEND"] = "supabase"   # psycopg not installed in test env
+    os.environ["MEMORY_DB_URL"] = "postgresql://x:y@localhost:5432/z"
+    try:
+        assert memory.get_store().backend_name == "local"   # graceful fallback
+        # store still works after falling back
+        assert memory.remember("post-fallback memory", kind="fact") is not None
+    finally:
+        os.environ.pop("MEMORY_BACKEND", None)
+        os.environ.pop("MEMORY_DB_URL", None)
+        memory._STORE = None
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]
