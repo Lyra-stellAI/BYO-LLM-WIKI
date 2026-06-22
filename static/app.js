@@ -261,8 +261,25 @@ function renderSummary(data) {
       </div>
       <h2>${escapeHTML(data.title)}</h2>
       <div class="summary-body">${escapeHTML(data.summary)}</div>
+      <div class="context-actions">
+        <button class="btn btn-primary" data-save-summary="1">Save summary to store</button>
+      </div>
     </article>
   `;
+  // The summary is reusable content: store it as its own cache record (kind
+  // 'summary') so it can be vectorized for Q&A or pushed into the KG later,
+  // without colliding with the source's own projection (no source_url).
+  resultsEl.querySelector("[data-save-summary]")?.addEventListener("click", (e) => {
+    const origin = data.url ? data.url : "pasted text";
+    ingestToStore({
+      kind: "summary",
+      source_title: `${data.title} — summary`,
+      text: data.summary,
+      note: `${badge} summary of ${origin}`,
+      tags: ["summary", data.engine === "ai" ? `provider:${data.provider}` : "extractive"],
+      origin: "summary",
+    }, e.currentTarget);
+  });
 }
 
 async function loadProviders() {

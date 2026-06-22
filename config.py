@@ -82,6 +82,30 @@ def ensure_tracing_project() -> str | None:
     return os.environ.get("LANGSMITH_PROJECT")
 
 
+def traced_openai(client):
+    """Wrap an OpenAI(-compatible) SDK client so its calls trace to LangSmith
+    (latency, token usage -> cost, errors). No-op passthrough when tracing is
+    off or the wrapper is unavailable — best-effort, never breaks a call."""
+    if not tracing_enabled():
+        return client
+    try:
+        from langsmith.wrappers import wrap_openai
+        return wrap_openai(client)
+    except Exception:  # noqa: BLE001
+        return client
+
+
+def traced_anthropic(client):
+    """LangSmith-tracing wrapper for an Anthropic SDK client (see traced_openai)."""
+    if not tracing_enabled():
+        return client
+    try:
+        from langsmith.wrappers import wrap_anthropic
+        return wrap_anthropic(client)
+    except Exception:  # noqa: BLE001
+        return client
+
+
 def tracing_status() -> dict:
     """Summarize the current LangSmith tracing configuration."""
     return {

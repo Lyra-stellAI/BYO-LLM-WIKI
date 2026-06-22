@@ -11,6 +11,8 @@ import os
 
 import numpy as np
 
+import config
+
 DEFAULT_EMBED_MODEL = os.environ.get("KG_EMBED_MODEL", "text-embedding-3-small")
 _BATCH = 96
 
@@ -34,7 +36,8 @@ def _client():
             "OPENAI_API_KEY is required for embeddings (used by the vector store)."
         )
     base_url = os.environ.get("OPENAI_BASE_URL")
-    return OpenAI(api_key=key, base_url=base_url) if base_url else OpenAI(api_key=key)
+    client = OpenAI(api_key=key, base_url=base_url) if base_url else OpenAI(api_key=key)
+    return config.traced_openai(client)
 
 
 def _normalize(mat: np.ndarray) -> np.ndarray:

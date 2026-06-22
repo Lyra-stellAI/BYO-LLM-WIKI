@@ -41,6 +41,16 @@ try:
 except ImportError:
     DDGS = None
 
+try:
+    from langsmith import traceable
+except ImportError:  # tracing is optional
+    def traceable(*dargs, **dkw):  # type: ignore
+        if len(dargs) == 1 and callable(dargs[0]) and not dkw:
+            return dargs[0]
+        def _wrap(fn):
+            return fn
+        return _wrap
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
@@ -121,7 +131,7 @@ def anthropic_summary(model: str, title: str, url: str, text: str) -> str:
         raise RuntimeError("anthropic package is not installed.")
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise RuntimeError("ANTHROPIC_API_KEY is not set.")
-    client = Anthropic()
+    client = config.traced_anthropic(Anthropic())
     msg = client.messages.create(
         model=model,
         max_tokens=1024,
@@ -133,12 +143,12 @@ def anthropic_summary(model: str, title: str, url: str, text: str) -> str:
 def openai_compatible_summary(provider: str, model: str, title: str, url: str, text: str) -> str:
     if OpenAI is None:
         raise RuntimeError("openai package is not installed.")
-    config = PROVIDERS[provider]
-    api_key = os.environ.get(config["env_key"])
+    pcfg = PROVIDERS[provider]
+    api_key = os.environ.get(pcfg["env_key"])
     if not api_key:
-        raise RuntimeError(f"{config['env_key']} is not set.")
-    base_url = os.environ.get(config.get("base_url_env", ""), config.get("base_url"))
-    client = OpenAI(api_key=api_key, base_url=base_url)
+        raise RuntimeError(f"{pcfg['env_key']} is not set.")
+    base_url = os.environ.get(pcfg.get("base_url_env", ""), pcfg.get("base_url"))
+    client = config.traced_openai(OpenAI(api_key=api_key, base_url=base_url))
     resp = client.chat.completions.create(
         model=model,
         max_tokens=1024,
@@ -147,6 +157,7 @@ def openai_compatible_summary(provider: str, model: str, title: str, url: str, t
     return (resp.choices[0].message.content or "").strip()
 
 
+@traceable(name="summarize", tags=["summarize", "read-tab"])
 def generate_ai_summary(provider: str, model: str, title: str, url: str, text: str) -> str:
     if provider == "anthropic":
         return anthropic_summary(model, title, url, text)
