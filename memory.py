@@ -119,8 +119,27 @@ class LocalMemoryStore:
     def load(self) -> dict:
         return _local_load()
 
-    def save(self, data: dict) -> None:
+    def upsert(self, records: list[dict]) -> None:
+        records = [r for r in records if r and r.get("id")]
+        if not records:
+            return
+        data = _local_load()
+        by_id = {r["id"]: r for r in data["records"]}
+        for r in records:
+            by_id[r["id"]] = r
+        data["records"] = list(by_id.values())
         _local_save(data)
+
+    def delete(self, ids: list[str]) -> None:
+        drop = {i for i in ids if i}
+        if not drop:
+            return
+        data = _local_load()
+        data["records"] = [r for r in data["records"] if r.get("id") not in drop]
+        _local_save(data)
+
+    def clear(self) -> None:
+        _local_save(_empty())
 
 
 def _pg_conninfo() -> str | None:
@@ -191,15 +210,15 @@ class SupabaseMemoryStore:
             rows = cur.fetchall()
         return {"version": SCHEMA_VERSION, "records": [r["doc"] for r in rows]}
 
-    def save(self, data: dict) -> None:
+    def upsert(self, records: list[dict]) -> None:
+        # Per-record upsert ONLY — never "delete rows absent from a snapshot".
+        # A stale snapshot from a concurrent instance must not delete another
+        # writer's newly-added rows; deletions are explicit (delete/clear).
         from psycopg.types.json import Jsonb
-        records = data.get("records", [])
-        ids = [r["id"] for r in records if r.get("id")]
+        records = [r for r in records if r and r.get("id")]
+        if not records:
+            return
         with self.pool.connection() as conn, conn.cursor() as cur:
-            if ids:
-                cur.execute(f"DELETE FROM {self._table} WHERE id <> ALL(%s)", (ids,))
-            else:
-                cur.execute(f"DELETE FROM {self._table}")
             for r in records:
                 cur.execute(
                     f"INSERT INTO {self._table} (id, doc, kind, superseded, updated_at) "
@@ -207,6 +226,17 @@ class SupabaseMemoryStore:
                     f"doc=EXCLUDED.doc, kind=EXCLUDED.kind, "
                     f"superseded=EXCLUDED.superseded, updated_at=now()",
                     (r["id"], Jsonb(r), r.get("kind"), bool(r.get("superseded_by"))))
+
+    def delete(self, ids: list[str]) -> None:
+        ids = [i for i in ids if i]
+        if not ids:
+            return
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {self._table} WHERE id = ANY(%s)", (ids,))
+
+    def clear(self) -> None:
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {self._table}")
 
 
 _STORE = None
@@ -235,8 +265,14 @@ def _load() -> dict:
     return get_store().load()
 
 
-def _save(data: dict) -> None:
-    get_store().save(data)
+def _persist_upsert(records: list[dict]) -> None:
+    """Insert/update the given records only — no delete-by-absence, so a stale
+    in-memory snapshot can never remove another writer's rows on a shared backend."""
+    get_store().upsert([r for r in records if r])
+
+
+def _persist_delete(ids: list[str]) -> None:
+    get_store().delete([i for i in ids if i])
 
 
 def _preview(text: str, n: int = 200) -> str:
@@ -388,7 +424,7 @@ def remember(text: str, *, kind: str = "fact", salience: int = 3,
             if dup is not None:
                 _reinforce(dup, salience=salience, confidence=confidence,
                            tags=tags, origin=origin)
-                _save(data)
+                _persist_upsert([dup])
                 return _public(dup)
         rec = {
             "id": f"memory_{uuid.uuid4().hex[:12]}",
@@ -411,8 +447,7 @@ def remember(text: str, *, kind: str = "fact", salience: int = 3,
             "updated_at": _now(),
             "last_used_at": None,
         }
-        data["records"].append(rec)
-        _save(data)
+        _persist_upsert([rec])
         return _public(rec)
 
 
@@ -421,17 +456,17 @@ def bump_use(ids: list[str]) -> int:
     if not ids:
         return 0
     wanted = set(ids)
-    n = 0
     with _lock:
         data = _load()
+        changed = []
         for r in data["records"]:
             if r.get("id") in wanted:
                 r["use_count"] = r.get("use_count", 0) + 1
                 r["last_used_at"] = _now()
-                n += 1
-        if n:
-            _save(data)
-    return n
+                changed.append(r)
+        if changed:
+            _persist_upsert(changed)
+    return len(changed)
 
 
 def record_feedback(*, question: str = "", answer: str = "", rating: str = "",
@@ -458,7 +493,7 @@ def record_feedback(*, question: str = "", answer: str = "", rating: str = "",
                 if old is not None:
                     old["superseded_by"] = new["id"]
                     old["updated_at"] = _now()
-                    _save(data)
+                    _persist_upsert([old])
         return new
 
     if memory_id and rating in ("up", "down"):
@@ -475,7 +510,7 @@ def record_feedback(*, question: str = "", answer: str = "", rating: str = "",
             else:
                 rec["salience"] = max(1, rec.get("salience", 3) - 1)
             rec["updated_at"] = _now()
-            _save(data)
+            _persist_upsert([rec])
             return _public(rec)
 
     if rating == "down" and question:
@@ -488,21 +523,26 @@ def record_feedback(*, question: str = "", answer: str = "", rating: str = "",
 def forget(mem_id: str) -> bool:
     with _lock:
         data = _load()
-        before = len(data["records"])
-        data["records"] = [r for r in data["records"] if r.get("id") != mem_id]
-        # detach dangling supersede pointers
+        if _by_id(data, mem_id) is None:
+            return False
+        # Detach any dangling supersede pointers, then persist explicitly: delete
+        # just this row + upsert only the records we actually changed. No
+        # delete-by-absence, so concurrent writers' rows are never touched.
+        detached = []
         for r in data["records"]:
             if r.get("superseded_by") == mem_id:
                 r["superseded_by"] = None
-        changed = len(data["records"]) != before
-        if changed:
-            _save(data)
-        return changed
+                r["updated_at"] = _now()
+                detached.append(r)
+        _persist_delete([mem_id])
+        if detached:
+            _persist_upsert(detached)
+        return True
 
 
 def clear() -> None:
     with _lock:
-        _save(_empty())
+        get_store().clear()
 
 
 # --- read --------------------------------------------------------------------

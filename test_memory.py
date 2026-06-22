@@ -109,6 +109,31 @@ def test_backend_local_by_default():
     assert memory.stats()["backend"] == "local"
 
 
+def test_upsert_does_not_delete_absent_records():
+    # Models two concurrent writers on a shared backend: instance A stores m1,
+    # then a stale writer (that never saw m1) upserts only m2. m1 must survive —
+    # the store must never delete rows absent from a caller's snapshot.
+    memory.clear()
+    m1 = memory.remember("memory from instance A", kind="fact")
+    memory.get_store().upsert([{
+        "id": "memory_stale_b", "type": "memory", "kind": "fact",
+        "text": "memory from a stale instance B", "superseded_by": None,
+        "salience": 3, "embedding": None,
+        "created_at": memory._now(), "updated_at": memory._now()}])
+    ids = {r["id"] for r in memory.list_memories()}
+    assert m1["id"] in ids, "stale upsert must not delete another writer's row"
+    assert "memory_stale_b" in ids
+
+
+def test_forget_then_other_records_survive():
+    memory.clear()
+    a = memory.remember("keep me", kind="fact")
+    b = memory.remember("forget me", kind="fact")
+    assert memory.forget(b["id"]) is True
+    ids = {r["id"] for r in memory.list_memories()}
+    assert a["id"] in ids and b["id"] not in ids   # explicit delete is targeted
+
+
 def test_supabase_backend_falls_back_to_local():
     memory._STORE = None
     os.environ["MEMORY_BACKEND"] = "supabase"   # psycopg not installed in test env
