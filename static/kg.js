@@ -569,6 +569,7 @@
     files: document.getElementById("ingestFiles"),
     urls: document.getElementById("ingestUrls"),
     text: document.getElementById("ingestText"),
+    cache: document.getElementById("ingestCache"),
   };
   let activeMode = "files";
   modeTabs.forEach((t) => {
@@ -576,6 +577,7 @@
       activeMode = t.dataset.mode;
       modeTabs.forEach((x) => x.classList.toggle("active", x === t));
       Object.entries(modePanels).forEach(([m, el]) => el.classList.toggle("active", m === activeMode));
+      if (activeMode === "cache") loadKgCache();
     });
   });
 
@@ -682,13 +684,69 @@
     return msg;
   }
 
+  // --- From-cache: convert already-extracted content into the KG (no re-fetch) -
+  const kgCacheListEl = document.getElementById("kgCacheList");
+  const kgCacheAll = document.getElementById("kgCacheAll");
+
+  function renderCachePicker(container, items) {
+    if (!items.length) {
+      container.innerHTML = '<div class="cache-empty">No cached items available. Extract some URLs on the Read tab first.</div>';
+      return;
+    }
+    container.innerHTML = items.map((it) => `
+      <label class="cache-row">
+        <input type="checkbox" value="${esc(it.id)}" />
+        <span class="cache-row-main">
+          <span class="cache-row-title">${esc(it.source_title || it.source_url || it.id)}${it.kg_stale ? ' <span class="badge">drifted</span>' : ""}</span>
+          <span class="cache-row-meta">${(it.chars || 0).toLocaleString()} chars${it.source_url ? " · " + esc(it.source_url) : ""}</span>
+        </span>
+      </label>
+    `).join("");
+  }
+
+  async function loadKgCache() {
+    if (!kgCacheListEl) return;
+    kgCacheListEl.innerHTML = '<div class="cache-empty">Loading…</div>';
+    if (kgCacheAll) kgCacheAll.checked = false;
+    try {
+      const data = await fetch("/api/cache/items?needs_kg=true").then((r) => r.json());
+      renderCachePicker(kgCacheListEl, data.items || []);
+    } catch (e) {
+      kgCacheListEl.innerHTML = `<div class="cache-empty">Could not load cache: ${esc(e.message)}</div>`;
+    }
+  }
+
+  async function ingestFromCache() {
+    const ids = [...kgCacheListEl.querySelectorAll("input[type=checkbox]:checked")].map((c) => c.value);
+    if (!ids.length) throw new Error("Select at least one cached item.");
+    const opts = getOptions();
+    const res = await fetch("/api/cache/to-kg", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...opts, item_ids: ids }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Convert failed");
+    await loadKgCache();
+    const errs = (data.errors || []).length;
+    return `Staged ${data.total_chunks} chunk(s) from ${data.staged.length} item(s)`
+      + (errs ? `, ${errs} failed` : "") + ". Click Integrate → to extract entities.";
+  }
+
+  if (kgCacheAll) kgCacheAll.addEventListener("change", () => {
+    kgCacheListEl.querySelectorAll("input[type=checkbox]").forEach((c) => { c.checked = kgCacheAll.checked; });
+  });
+  document.getElementById("kgCacheRefresh")?.addEventListener("click", loadKgCache);
+
   ingestBtn.addEventListener("click", async () => {
     ingestBtn.disabled = true;
     const prev = ingestBtn.textContent;
     ingestBtn.textContent = "Ingesting…";
     setIngestStatus("Working…");
     try {
-      const fn = activeMode === "files" ? ingestFiles : activeMode === "urls" ? ingestUrls : ingestText;
+      const fn = activeMode === "files" ? ingestFiles
+        : activeMode === "urls" ? ingestUrls
+        : activeMode === "cache" ? ingestFromCache
+        : ingestText;
       const msg = await fn();
       setIngestStatus(msg, "ok");
       await refresh();
@@ -700,7 +758,7 @@
     }
   });
 
-  window.kg = { openModal, refresh };
+  window.kg = { openModal, refresh, loadCache: loadKgCache };
   loadAgentStatus();
   refresh();
 })();

@@ -6,6 +6,8 @@ venv/
 env/
 .env
 .env.local
+.env.*.bak
+env.txt
 *.log
 .DS_Store
 .idea/
@@ -17,4 +19,5 @@ data/*.sqlite-*
 data/library/
 data/vectors/
 data/skills/
+data/cached/
 mcp.json

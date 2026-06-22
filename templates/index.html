@@ -125,11 +125,14 @@
             autofocus
           />
           <button id="searchBtn" class="btn btn-primary">Search</button>
+          <button id="extractBtn" class="btn btn-secondary" title="Fetch one or more URLs (comma / space / newline separated) and cache them so KG and Q&amp;A can reuse the content without re-fetching">Extract all</button>
           <button id="summarizeBtn" class="btn btn-secondary">Summarize</button>
           <button id="addKgBtn" class="btn btn-accent">+ KG</button>
         </div>
         <p class="hint">
           Press <kbd>Enter</kbd> to search, <kbd>Shift</kbd>+<kbd>Enter</kbd> to summarize.
+          Paste several URLs (comma / space separated) and click <strong>Extract all</strong> to
+          fetch &amp; cache them — then convert to KG or vectorize for Q&amp;A without re-fetching.
           Highlight any text in a summary to save it to the graph.
         </p>
       </div>
@@ -146,6 +149,7 @@
             <button class="ingest-mode-tab active" data-mode="files">Files</button>
             <button class="ingest-mode-tab" data-mode="urls">URLs</button>
             <button class="ingest-mode-tab" data-mode="text">Text</button>
+            <button class="ingest-mode-tab" data-mode="cache">From cache</button>
           </div>
         </div>
 
@@ -165,6 +169,18 @@
         <div id="ingestText" class="ingest-mode">
           <input id="textTitle" type="text" placeholder="Source title (e.g. Book — chapter 3)" />
           <textarea id="textInput" rows="6" placeholder="Paste a large document, article, or book chapter…"></textarea>
+        </div>
+
+        <div id="ingestCache" class="ingest-mode">
+          <p class="hint" style="margin-top:0">
+            Already-extracted content from the Read tab. Select items and convert
+            them to the graph — no re-fetching. Items already in the KG are hidden.
+          </p>
+          <div class="cache-picker-head">
+            <label class="rag-toggle"><input type="checkbox" id="kgCacheAll" /> select all</label>
+            <button id="kgCacheRefresh" class="btn btn-secondary btn-sm" type="button">Refresh</button>
+          </div>
+          <div id="kgCacheList" class="cache-picker-list"></div>
         </div>
 
         <div class="ingest-options">
@@ -267,6 +283,22 @@
         <div class="ingest-actions">
           <button id="ragIngestBtn" class="btn btn-accent">Ingest →</button>
           <div id="ragIngestProgress" class="ingest-progress"></div>
+        </div>
+
+        <div class="cache-vectorize">
+          <div class="agent-head" style="margin-top:18px">
+            <h3>Vectorize from cache</h3>
+            <button id="ragCacheRefresh" class="btn btn-secondary btn-sm" type="button">Refresh</button>
+          </div>
+          <p class="hint" style="margin-top:0">
+            Content already extracted on the Read tab. Select items to embed into
+            the library — no re-fetching. Items already vectorized are hidden.
+          </p>
+          <div class="cache-picker-head">
+            <label class="rag-toggle"><input type="checkbox" id="ragCacheAll" /> select all</label>
+            <button id="ragCacheVectorizeBtn" class="btn btn-accent btn-sm" type="button">Vectorize selected →</button>
+          </div>
+          <div id="ragCacheList" class="cache-picker-list"></div>
         </div>
       </div>
 
