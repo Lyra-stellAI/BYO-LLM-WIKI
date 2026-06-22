@@ -1,6 +1,7 @@
 # Build Your Own WIKI
 
-<img width="1695" height="928" alt="BYO-WIKI" src="https://github.com/user-attachments/assets/0b73a45f-65e8-4170-ab05-474049fc6a77" />
+<img width="1672" height="941" alt="ChatGPT Image Jun 22, 2026, 01_55_25 AM" src="https://github.com/user-attachments/assets/5e5243b5-9614-4f5d-9cc2-b54b492a8fe8" />
+
 
 Turn the web, your files, and loose notes into a **personal wiki** that an LLM agent
 keeps coherent: search and summarize pages, ingest them into a contextual vector
@@ -9,6 +10,8 @@ entities, builds topics, and writes synthesis pages. One Flask app — web UI, J
 and a `runner.py` CLI. Inspired by LangChain's *llm-wiki* deep-agents example, but it
 builds a private, on-disk library instead of syncing to a hub. **Local-first**: every
 store is plain JSON/SQLite under `data/`; cloud is opt-in.
+
+Check short demo @ "https://www.youtube.com/watch?v=23JRyHSQdCI"
 
 ## Features
 
@@ -25,8 +28,6 @@ store is plain JSON/SQLite under `data/`; cloud is opt-in.
   sub-agent pipeline (understand → analyze → author → eval → gate → refine). Authored by
   the latest Claude in-process or via the **Claude Code CLI as a subprocess**, scored by a
   deterministic + rubric panel, and **gated behind human review** before it joins the library.
-- **Six LLM providers, one key** — Claude, OpenAI, Qwen, DeepSeek, Gemini, Mistral, chosen
-  per request. No key falls back to a local extractive summarizer.
 - **MCP, both directions** — connect agents to external MCP servers (Supabase, GitHub, …)
   and run BYO-WIKI *as* an MCP server. Reads join the agent; **writes are deny-by-default**.
 
