@@ -16,7 +16,8 @@ import tempfile
 
 # Isolate state BEFORE importing app: throwaway data dir + no model keys so the
 # import path stays offline and deterministic.
-os.environ.setdefault("KG_DATA_DIR", tempfile.mkdtemp(prefix="search_test_"))
+os.environ["KG_DATA_DIR"] = (os.environ.get("BYOWIKI_TEST_DATA_DIR")
+                             or tempfile.mkdtemp(prefix="search_test_"))
 os.environ.pop("OPENAI_API_KEY", None)
 os.environ.pop("ANTHROPIC_API_KEY", None)
 

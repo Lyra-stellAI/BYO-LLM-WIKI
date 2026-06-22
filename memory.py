@@ -76,7 +76,7 @@ def _empty() -> dict:
             "updated_at": _now(), "records": []}
 
 
-def _load() -> dict:
+def _local_load() -> dict:
     if not MEMORY_PATH.exists():
         return _empty()
     try:
@@ -95,7 +95,7 @@ def _load() -> dict:
     return data
 
 
-def _save(data: dict) -> None:
+def _local_save(data: dict) -> None:
     data["updated_at"] = _now()
     MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = MEMORY_PATH.with_suffix(".tmp")
@@ -105,6 +105,174 @@ def _save(data: dict) -> None:
         _cache["data"], _cache["mtime"] = data, MEMORY_PATH.stat().st_mtime
     except OSError:
         _cache["data"], _cache["mtime"] = data, None
+
+
+# --- pluggable backend: local JSON (default) or Supabase (opt-in) ------------
+# All of memory's logic (dedup, recall, supersede, scoring) runs in Python on
+# the records returned by load(), so behavior is IDENTICAL across backends — the
+# backend only decides WHERE the records live. ``MEMORY_BACKEND=supabase`` stores
+# one row per memory (full record as jsonb, embedding inline) in Postgres for
+# durable cross-device memory; it falls back to local on any connection failure.
+class LocalMemoryStore:
+    backend_name = "local"
+
+    def load(self) -> dict:
+        return _local_load()
+
+    def upsert(self, records: list[dict]) -> None:
+        records = [r for r in records if r and r.get("id")]
+        if not records:
+            return
+        data = _local_load()
+        by_id = {r["id"]: r for r in data["records"]}
+        for r in records:
+            by_id[r["id"]] = r
+        data["records"] = list(by_id.values())
+        _local_save(data)
+
+    def delete(self, ids: list[str]) -> None:
+        drop = {i for i in ids if i}
+        if not drop:
+            return
+        data = _local_load()
+        data["records"] = [r for r in data["records"] if r.get("id") not in drop]
+        _local_save(data)
+
+    def clear(self) -> None:
+        _local_save(_empty())
+
+
+def _pg_conninfo() -> str | None:
+    return (os.environ.get("MEMORY_DB_URL")
+            or os.environ.get("SUPABASE_DB_URL") or "").strip() or None
+
+
+def _pg_schema() -> str:
+    s = os.environ.get("MEMORY_PG_SCHEMA", "memory").strip()
+    return re.sub(r"[^a-zA-Z0-9_]", "", s) or "memory"
+
+
+class SupabaseMemoryStore:
+    """Cloud memory backend over psycopg. One row per memory: the full record as
+    jsonb (embedding inline), so memory.py's Python recall/dedup is unchanged.
+    Reuses the pgbouncer-safe pool kwargs from skill_graph.py."""
+
+    backend_name = "supabase"
+
+    def __init__(self):
+        conninfo = _pg_conninfo()
+        if not conninfo:
+            raise RuntimeError("no MEMORY_DB_URL / SUPABASE_DB_URL set")
+        from psycopg_pool import ConnectionPool
+        from psycopg.rows import dict_row
+
+        self.schema = _pg_schema()
+        self._table = f'"{self.schema}".memory_items'
+
+        def _configure(conn):
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
+                cur.execute(f'SET search_path TO "{self.schema}", public')
+
+        self.pool = ConnectionPool(
+            conninfo=conninfo, min_size=1,
+            max_size=int(os.environ.get("MEMORY_PG_POOL", "4")),
+            kwargs={"autocommit": True, "prepare_threshold": None,
+                    "row_factory": dict_row, "connect_timeout": 10},
+            configure=_configure, open=False)
+        try:
+            self.pool.open(wait=True, timeout=15)
+            self._setup()
+        except Exception:
+            try:
+                self.pool.close()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+
+    def _setup(self) -> None:
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS {self._table} (
+                    id text PRIMARY KEY,
+                    doc jsonb NOT NULL,
+                    kind text,
+                    superseded boolean DEFAULT false,
+                    updated_at timestamptz DEFAULT now()
+                )""")
+            cur.execute(f"CREATE INDEX IF NOT EXISTS memory_items_kind_idx "
+                        f"ON {self._table} (kind)")
+
+    def load(self) -> dict:
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT doc FROM {self._table}")
+            rows = cur.fetchall()
+        return {"version": SCHEMA_VERSION, "records": [r["doc"] for r in rows]}
+
+    def upsert(self, records: list[dict]) -> None:
+        # Per-record upsert ONLY — never "delete rows absent from a snapshot".
+        # A stale snapshot from a concurrent instance must not delete another
+        # writer's newly-added rows; deletions are explicit (delete/clear).
+        from psycopg.types.json import Jsonb
+        records = [r for r in records if r and r.get("id")]
+        if not records:
+            return
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            for r in records:
+                cur.execute(
+                    f"INSERT INTO {self._table} (id, doc, kind, superseded, updated_at) "
+                    f"VALUES (%s,%s,%s,%s,now()) ON CONFLICT (id) DO UPDATE SET "
+                    f"doc=EXCLUDED.doc, kind=EXCLUDED.kind, "
+                    f"superseded=EXCLUDED.superseded, updated_at=now()",
+                    (r["id"], Jsonb(r), r.get("kind"), bool(r.get("superseded_by"))))
+
+    def delete(self, ids: list[str]) -> None:
+        ids = [i for i in ids if i]
+        if not ids:
+            return
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {self._table} WHERE id = ANY(%s)", (ids,))
+
+    def clear(self) -> None:
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {self._table}")
+
+
+_STORE = None
+
+
+def get_store():
+    """Resolve the memory backend once (MEMORY_BACKEND). Supabase failures fall
+    back to local with a stderr note, so a misconfigured DB never blocks recall."""
+    global _STORE
+    if _STORE is None:
+        if os.environ.get("MEMORY_BACKEND", "local").strip().lower() == "supabase":
+            try:
+                _STORE = SupabaseMemoryStore()
+            except Exception as exc:  # noqa: BLE001
+                import sys
+                print(f"[memory] Supabase backend unavailable "
+                      f"({type(exc).__name__}: {exc}); falling back to local.",
+                      file=sys.stderr)
+                _STORE = LocalMemoryStore()
+        else:
+            _STORE = LocalMemoryStore()
+    return _STORE
+
+
+def _load() -> dict:
+    return get_store().load()
+
+
+def _persist_upsert(records: list[dict]) -> None:
+    """Insert/update the given records only — no delete-by-absence, so a stale
+    in-memory snapshot can never remove another writer's rows on a shared backend."""
+    get_store().upsert([r for r in records if r])
+
+
+def _persist_delete(ids: list[str]) -> None:
+    get_store().delete([i for i in ids if i])
 
 
 def _preview(text: str, n: int = 200) -> str:
@@ -256,7 +424,7 @@ def remember(text: str, *, kind: str = "fact", salience: int = 3,
             if dup is not None:
                 _reinforce(dup, salience=salience, confidence=confidence,
                            tags=tags, origin=origin)
-                _save(data)
+                _persist_upsert([dup])
                 return _public(dup)
         rec = {
             "id": f"memory_{uuid.uuid4().hex[:12]}",
@@ -279,8 +447,7 @@ def remember(text: str, *, kind: str = "fact", salience: int = 3,
             "updated_at": _now(),
             "last_used_at": None,
         }
-        data["records"].append(rec)
-        _save(data)
+        _persist_upsert([rec])
         return _public(rec)
 
 
@@ -289,17 +456,17 @@ def bump_use(ids: list[str]) -> int:
     if not ids:
         return 0
     wanted = set(ids)
-    n = 0
     with _lock:
         data = _load()
+        changed = []
         for r in data["records"]:
             if r.get("id") in wanted:
                 r["use_count"] = r.get("use_count", 0) + 1
                 r["last_used_at"] = _now()
-                n += 1
-        if n:
-            _save(data)
-    return n
+                changed.append(r)
+        if changed:
+            _persist_upsert(changed)
+    return len(changed)
 
 
 def record_feedback(*, question: str = "", answer: str = "", rating: str = "",
@@ -326,7 +493,7 @@ def record_feedback(*, question: str = "", answer: str = "", rating: str = "",
                 if old is not None:
                     old["superseded_by"] = new["id"]
                     old["updated_at"] = _now()
-                    _save(data)
+                    _persist_upsert([old])
         return new
 
     if memory_id and rating in ("up", "down"):
@@ -343,7 +510,7 @@ def record_feedback(*, question: str = "", answer: str = "", rating: str = "",
             else:
                 rec["salience"] = max(1, rec.get("salience", 3) - 1)
             rec["updated_at"] = _now()
-            _save(data)
+            _persist_upsert([rec])
             return _public(rec)
 
     if rating == "down" and question:
@@ -356,21 +523,26 @@ def record_feedback(*, question: str = "", answer: str = "", rating: str = "",
 def forget(mem_id: str) -> bool:
     with _lock:
         data = _load()
-        before = len(data["records"])
-        data["records"] = [r for r in data["records"] if r.get("id") != mem_id]
-        # detach dangling supersede pointers
+        if _by_id(data, mem_id) is None:
+            return False
+        # Detach any dangling supersede pointers, then persist explicitly: delete
+        # just this row + upsert only the records we actually changed. No
+        # delete-by-absence, so concurrent writers' rows are never touched.
+        detached = []
         for r in data["records"]:
             if r.get("superseded_by") == mem_id:
                 r["superseded_by"] = None
-        changed = len(data["records"]) != before
-        if changed:
-            _save(data)
-        return changed
+                r["updated_at"] = _now()
+                detached.append(r)
+        _persist_delete([mem_id])
+        if detached:
+            _persist_upsert(detached)
+        return True
 
 
 def clear() -> None:
     with _lock:
-        _save(_empty())
+        get_store().clear()
 
 
 # --- read --------------------------------------------------------------------
@@ -475,4 +647,5 @@ def stats() -> dict:
         "embedded": sum(1 for r in active if r.get("embedding")),
         "embeddings": embeddings_on(),
         "uses": sum(r.get("use_count", 0) for r in active),
+        "backend": get_store().backend_name,
     }

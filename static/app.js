@@ -411,6 +411,7 @@ document.querySelectorAll(".tab").forEach((tab) => {
       window.kg.refresh && window.kg.refresh();
       window.kg.loadCache && window.kg.loadCache();
     }
+    if (target === "cache" && window.cacheView) window.cacheView.refresh();
   });
 });
 

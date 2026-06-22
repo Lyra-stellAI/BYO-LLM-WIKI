@@ -693,6 +693,44 @@ kbd {
 }
 .cache-empty { color: var(--muted); font-size: 0.88rem; padding: 14px 8px; text-align: center; }
 
+/* Cache tab: browse + manage all cached items */
+.cache-browser-toolbar { display: flex; gap: 10px; align-items: center; margin: 10px 0 12px; }
+.cache-browser-toolbar input {
+  flex: 1; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--text); font-size: 0.9rem;
+}
+.cache-browser-list { display: flex; flex-direction: column; gap: 8px; }
+.cache-item {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface);
+}
+.cache-item-main { flex: 1; min-width: 0; }
+.cache-item-title { color: var(--text-strong); font-weight: 600; }
+.cache-item-meta {
+  color: var(--muted); font-size: 0.8rem; margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cache-item-badges { display: flex; gap: 6px; flex: none; }
+.cache-item-actions { display: flex; gap: 6px; flex: none; }
+.cache-b-kg { background: color-mix(in srgb, var(--accent) 22%, var(--surface-2)); }
+.cache-b-vec { background: color-mix(in srgb, var(--success) 22%, var(--surface-2)); }
+.cache-b-drift { background: color-mix(in srgb, var(--accent-2) 30%, var(--surface-2)); color: var(--text-strong); }
+.cache-del { color: var(--accent-2); border-color: var(--border); }
+.cache-del:hover { border-color: var(--accent-2); background: color-mix(in srgb, var(--accent-2) 12%, transparent); }
+.cache-detail {
+  margin-top: 14px; padding: 14px 16px; border: 1px solid var(--border);
+  border-radius: var(--r); background: var(--bg);
+}
+.cache-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.cache-detail-head h3 { margin: 0; }
+.cache-raw {
+  white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow-y: auto;
+  margin: 10px 0 0; padding: 12px; border-radius: var(--r-sm);
+  background: var(--surface); border: 1px solid var(--border);
+  font-size: 0.85rem; line-height: 1.5; color: var(--text);
+}
+
 /* --- Responsive ----------------------------------------------------------- */
 @media (max-width: 560px) {
   .brand-tag { display: none; }
