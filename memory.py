@@ -76,7 +76,7 @@ def _empty() -> dict:
             "updated_at": _now(), "records": []}
 
 
-def _load() -> dict:
+def _local_load() -> dict:
     if not MEMORY_PATH.exists():
         return _empty()
     try:
@@ -95,7 +95,7 @@ def _load() -> dict:
     return data
 
 
-def _save(data: dict) -> None:
+def _local_save(data: dict) -> None:
     data["updated_at"] = _now()
     MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = MEMORY_PATH.with_suffix(".tmp")
@@ -105,6 +105,138 @@ def _save(data: dict) -> None:
         _cache["data"], _cache["mtime"] = data, MEMORY_PATH.stat().st_mtime
     except OSError:
         _cache["data"], _cache["mtime"] = data, None
+
+
+# --- pluggable backend: local JSON (default) or Supabase (opt-in) ------------
+# All of memory's logic (dedup, recall, supersede, scoring) runs in Python on
+# the records returned by load(), so behavior is IDENTICAL across backends — the
+# backend only decides WHERE the records live. ``MEMORY_BACKEND=supabase`` stores
+# one row per memory (full record as jsonb, embedding inline) in Postgres for
+# durable cross-device memory; it falls back to local on any connection failure.
+class LocalMemoryStore:
+    backend_name = "local"
+
+    def load(self) -> dict:
+        return _local_load()
+
+    def save(self, data: dict) -> None:
+        _local_save(data)
+
+
+def _pg_conninfo() -> str | None:
+    return (os.environ.get("MEMORY_DB_URL")
+            or os.environ.get("SUPABASE_DB_URL") or "").strip() or None
+
+
+def _pg_schema() -> str:
+    s = os.environ.get("MEMORY_PG_SCHEMA", "memory").strip()
+    return re.sub(r"[^a-zA-Z0-9_]", "", s) or "memory"
+
+
+class SupabaseMemoryStore:
+    """Cloud memory backend over psycopg. One row per memory: the full record as
+    jsonb (embedding inline), so memory.py's Python recall/dedup is unchanged.
+    Reuses the pgbouncer-safe pool kwargs from skill_graph.py."""
+
+    backend_name = "supabase"
+
+    def __init__(self):
+        conninfo = _pg_conninfo()
+        if not conninfo:
+            raise RuntimeError("no MEMORY_DB_URL / SUPABASE_DB_URL set")
+        from psycopg_pool import ConnectionPool
+        from psycopg.rows import dict_row
+
+        self.schema = _pg_schema()
+        self._table = f'"{self.schema}".memory_items'
+
+        def _configure(conn):
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
+                cur.execute(f'SET search_path TO "{self.schema}", public')
+
+        self.pool = ConnectionPool(
+            conninfo=conninfo, min_size=1,
+            max_size=int(os.environ.get("MEMORY_PG_POOL", "4")),
+            kwargs={"autocommit": True, "prepare_threshold": None,
+                    "row_factory": dict_row, "connect_timeout": 10},
+            configure=_configure, open=False)
+        try:
+            self.pool.open(wait=True, timeout=15)
+            self._setup()
+        except Exception:
+            try:
+                self.pool.close()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+
+    def _setup(self) -> None:
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS {self._table} (
+                    id text PRIMARY KEY,
+                    doc jsonb NOT NULL,
+                    kind text,
+                    superseded boolean DEFAULT false,
+                    updated_at timestamptz DEFAULT now()
+                )""")
+            cur.execute(f"CREATE INDEX IF NOT EXISTS memory_items_kind_idx "
+                        f"ON {self._table} (kind)")
+
+    def load(self) -> dict:
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT doc FROM {self._table}")
+            rows = cur.fetchall()
+        return {"version": SCHEMA_VERSION, "records": [r["doc"] for r in rows]}
+
+    def save(self, data: dict) -> None:
+        from psycopg.types.json import Jsonb
+        records = data.get("records", [])
+        ids = [r["id"] for r in records if r.get("id")]
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            if ids:
+                cur.execute(f"DELETE FROM {self._table} WHERE id <> ALL(%s)", (ids,))
+            else:
+                cur.execute(f"DELETE FROM {self._table}")
+            for r in records:
+                cur.execute(
+                    f"INSERT INTO {self._table} (id, doc, kind, superseded, updated_at) "
+                    f"VALUES (%s,%s,%s,%s,now()) ON CONFLICT (id) DO UPDATE SET "
+                    f"doc=EXCLUDED.doc, kind=EXCLUDED.kind, "
+                    f"superseded=EXCLUDED.superseded, updated_at=now()",
+                    (r["id"], Jsonb(r), r.get("kind"), bool(r.get("superseded_by"))))
+
+
+_STORE = None
+
+
+def get_store():
+    """Resolve the memory backend once (MEMORY_BACKEND). Supabase failures fall
+    back to local with a stderr note, so a misconfigured DB never blocks recall."""
+    global _STORE
+    if _STORE is None:
+        if os.environ.get("MEMORY_BACKEND", "local").strip().lower() == "supabase":
+            try:
+                _STORE = SupabaseMemoryStore()
+            except Exception as exc:  # noqa: BLE001
+                import sys
+                print(f"[memory] Supabase backend unavailable "
+                      f"({type(exc).__name__}: {exc}); falling back to local.",
+                      file=sys.stderr)
+                _STORE = LocalMemoryStore()
+        else:
+            _STORE = LocalMemoryStore()
+    return _STORE
+
+
+def _load() -> dict:
+    return get_store().load()
+
+
+def _save(data: dict) -> None:
+    get_store().save(data)
 
 
 def _preview(text: str, n: int = 200) -> str:
@@ -475,4 +607,5 @@ def stats() -> dict:
         "embedded": sum(1 for r in active if r.get("embedding")),
         "embeddings": embeddings_on(),
         "uses": sum(r.get("use_count", 0) for r in active),
+        "backend": get_store().backend_name,
     }
