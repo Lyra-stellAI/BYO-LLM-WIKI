@@ -85,7 +85,7 @@
 /* --- Base ------------------------------------------------------------------ */
 * { box-sizing: border-box; }
 
-html { scroll-behavior: smooth; }
+html { scroll-behavior: smooth; font-size: 17px; }
 
 body {
   margin: 0;
@@ -97,7 +97,7 @@ body {
   background-attachment: fixed;
   color: var(--text);
   font-family: var(--sans);
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.65;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
