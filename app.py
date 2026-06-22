@@ -1,5 +1,6 @@
 import os
 import re
+from io import BytesIO
 from urllib.parse import urlparse
 
 import requests
@@ -70,10 +71,41 @@ def is_valid_url(text: str) -> bool:
         return False
 
 
+def _looks_like_pdf(url: str, resp) -> bool:
+    ctype = (resp.headers.get("Content-Type") or "").lower()
+    return ("application/pdf" in ctype
+            or url.split("?")[0].split("#")[0].lower().endswith(".pdf")
+            or resp.content[:5] == b"%PDF-")
+
+
+def _pdf_title(content: bytes, url: str) -> str:
+    """PDF metadata title if present, else the URL's file name."""
+    try:
+        import pypdf
+        meta = pypdf.PdfReader(BytesIO(content)).metadata
+        title = ((meta.title if meta else "") or "").strip()
+        if title:
+            return title
+    except Exception:  # noqa: BLE001
+        pass
+    name = url.split("?")[0].split("#")[0].rstrip("/").rsplit("/", 1)[-1]
+    return name or url
+
+
 def fetch_page(url: str) -> dict:
-    headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
+    headers = {"User-Agent": USER_AGENT,
+               "Accept": "text/html,application/xhtml+xml,application/pdf,*/*"}
     resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
+
+    # PDFs (e.g. arXiv /pdf/ links) are not HTML — extract their text with pypdf
+    # rather than feeding the binary to the HTML parser (which would return the
+    # raw "%PDF-..." bytes as bogus "content").
+    if _looks_like_pdf(url, resp):
+        text = ingestion.parse_file("download.pdf", resp.content)
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        return {"title": _pdf_title(resp.content, url), "url": url, "text": text}
+
     soup = BeautifulSoup(resp.text, "lxml")
 
     for tag in soup(["script", "style", "noscript", "iframe", "svg", "header", "footer", "nav", "aside", "form"]):

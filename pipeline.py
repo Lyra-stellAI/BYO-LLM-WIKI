@@ -42,8 +42,19 @@ def _slug(s: str) -> str:
 
 def _fetch(url: str) -> dict:
     resp = requests.get(url, headers={"User-Agent": _UA,
-                        "Accept": "text/html,application/xhtml+xml"}, timeout=25)
+                        "Accept": "text/html,application/xhtml+xml,application/pdf,*/*"}, timeout=25)
     resp.raise_for_status()
+
+    # PDFs (e.g. arXiv /pdf/ links): extract text with pypdf, not the HTML parser.
+    ctype = (resp.headers.get("Content-Type") or "").lower()
+    if ("application/pdf" in ctype
+            or url.split("?")[0].split("#")[0].lower().endswith(".pdf")
+            or resp.content[:5] == b"%PDF-"):
+        text = ingestion.parse_file("download.pdf", resp.content)
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        return {"title": url.split("?")[0].rstrip("/").rsplit("/", 1)[-1] or url,
+                "url": url, "text": text, "date": ""}
+
     soup = BeautifulSoup(resp.text, "lxml")
 
     date = ""
