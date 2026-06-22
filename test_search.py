@@ -115,6 +115,40 @@ def test_fetch_error_reports_cleanly():
         app.fetch_page = orig_fetch
 
 
+class _FakeResp:
+    def __init__(self, content=b"", headers=None):
+        self.content = content
+        self.headers = headers or {}
+        self.text = content.decode("utf-8", "replace")
+
+    def raise_for_status(self):
+        pass
+
+
+def test_pdf_url_detected_and_parsed_not_as_html():
+    """A PDF (e.g. an arXiv /pdf/ link) must be extracted with the PDF parser,
+    never fed to the HTML parser (which returns the raw %PDF bytes as content)."""
+    # detection: by content-type, by .pdf extension, by %PDF magic header
+    assert app._looks_like_pdf("https://arxiv.org/pdf/2604.24026",
+                               _FakeResp(b"%PDF-1.7\n", {"Content-Type": "application/pdf"}))
+    assert app._looks_like_pdf("https://x.com/a.pdf", _FakeResp(b"junk"))
+    assert app._looks_like_pdf("https://x.com/doc?x=1", _FakeResp(b"%PDF-1.4 ..."))
+    assert not app._looks_like_pdf("https://x.com/page",
+                                   _FakeResp(b"<html>hi</html>", {"Content-Type": "text/html"}))
+
+    # fetch_page routes PDF bytes through ingestion.parse_file, not BeautifulSoup
+    orig_get, orig_parse = app.requests.get, app.ingestion.parse_file
+    app.requests.get = lambda *a, **k: _FakeResp(b"%PDF-1.7 fake bytes",
+                                                 {"Content-Type": "application/pdf"})
+    app.ingestion.parse_file = lambda name, content: "EXTRACTED PDF TEXT"
+    try:
+        page = app.fetch_page("https://arxiv.org/pdf/2604.24026")
+        assert page["text"] == "EXTRACTED PDF TEXT", page
+        assert not page["text"].startswith("%PDF")
+    finally:
+        app.requests.get, app.ingestion.parse_file = orig_get, orig_parse
+
+
 # --- live test against the three reference links ----------------------------
 
 def test_live_links_extract_context():
