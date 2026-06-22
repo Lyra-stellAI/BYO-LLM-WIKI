@@ -11,7 +11,7 @@ import os
 import sys
 import tempfile
 
-os.environ["KG_DATA_DIR"] = tempfile.mkdtemp(prefix="mcp_test_")
+os.environ.setdefault("KG_DATA_DIR", tempfile.mkdtemp(prefix="mcp_test_"))
 os.environ.pop("OPENAI_API_KEY", None)
 
 import knowledge_graph as kg  # noqa: E402

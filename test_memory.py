@@ -11,7 +11,7 @@ import os
 import tempfile
 
 # Isolate state BEFORE importing memory: a throwaway data dir + no embeddings.
-os.environ["KG_DATA_DIR"] = tempfile.mkdtemp(prefix="mem_test_")
+os.environ.setdefault("KG_DATA_DIR", tempfile.mkdtemp(prefix="mem_test_"))
 os.environ.pop("OPENAI_API_KEY", None)
 
 import memory  # noqa: E402
