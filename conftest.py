@@ -1,20 +1,28 @@
 """Shared pytest setup.
 
-Pin ONE throwaway ``KG_DATA_DIR`` for the whole test session, before any test
+Force ONE throwaway ``KG_DATA_DIR`` for the whole test session, before any test
 module is imported. pytest imports the root ``conftest.py`` first, so this dir
-wins; each ``test_*.py`` also sets ``KG_DATA_DIR`` via ``setdefault`` so it still
-works when run directly as a script (``python test_foo.py``).
+wins for every module and for the MCP subprocess.
 
-Why this is needed: the production modules capture ``DATA_DIR`` from
-``KG_DATA_DIR`` at import time, but the MCP loop test spawns a subprocess that
-reads ``KG_DATA_DIR`` from the environment at spawn time. When each test module
-set the env var unconditionally at import, the last-imported module's value won,
-desyncing the subprocess from where data was seeded and making the MCP test fail
-only under the full suite (it passed in isolation). One shared dir keeps every
-module — and the subprocess — in agreement.
+This assignment is UNCONDITIONAL on purpose: the test setup functions call
+``memory.clear()`` / ``kg.clear()`` / ``sk.clear()``, which would wipe a real
+library. If the developer's shell already has ``KG_DATA_DIR`` pointing at a real
+BYO-WIKI data dir, a ``setdefault`` would keep it and the suite would delete live
+data — so we always override with a fresh temp dir and never honor an inherited
+value. ``BYOWIKI_TEST_DATA_DIR`` is published so each ``test_*.py`` can adopt the
+SAME dir (keeping every module + the MCP subprocess in agreement) without
+clobbering it to a different per-file temp.
+
+Why one shared dir: production modules capture ``DATA_DIR`` from ``KG_DATA_DIR``
+at import, but the MCP loop test spawns a subprocess that reads ``KG_DATA_DIR``
+from the environment at spawn time. If each module set its own dir, the values
+desync and the MCP test fails only under the full suite.
 """
 
 import os
 import tempfile
 
-os.environ.setdefault("KG_DATA_DIR", tempfile.mkdtemp(prefix="byowiki_tests_"))
+# Unconditional: never inherit a (possibly real) KG_DATA_DIR from the shell.
+_TEST_DATA_DIR = tempfile.mkdtemp(prefix="byowiki_tests_")
+os.environ["KG_DATA_DIR"] = _TEST_DATA_DIR
+os.environ["BYOWIKI_TEST_DATA_DIR"] = _TEST_DATA_DIR

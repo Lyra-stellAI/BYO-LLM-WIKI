@@ -11,7 +11,8 @@ import os
 import tempfile
 
 # Isolate state BEFORE importing the layer: a throwaway data dir + no embeddings.
-os.environ.setdefault("KG_DATA_DIR", tempfile.mkdtemp(prefix="skill_test_"))
+os.environ["KG_DATA_DIR"] = (os.environ.get("BYOWIKI_TEST_DATA_DIR")
+                             or tempfile.mkdtemp(prefix="skill_test_"))
 os.environ.pop("OPENAI_API_KEY", None)
 
 import json  # noqa: E402

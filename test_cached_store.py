@@ -11,7 +11,8 @@ import shutil
 import tempfile
 
 # Isolate state BEFORE importing the module under test.
-os.environ.setdefault("KG_DATA_DIR", tempfile.mkdtemp(prefix="cache_test_"))
+os.environ["KG_DATA_DIR"] = (os.environ.get("BYOWIKI_TEST_DATA_DIR")
+                             or tempfile.mkdtemp(prefix="cache_test_"))
 os.environ.pop("CACHED_STORE_BACKEND", None)
 
 import cached_store as cs  # noqa: E402
