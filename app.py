@@ -8,6 +8,7 @@ from flask import Flask, jsonify, render_template, request, url_for
 
 import config
 import knowledge_graph as kg
+import cached_store
 import ingestion
 import extraction
 import memory
@@ -312,6 +313,266 @@ def api_summarize():
         return jsonify({"error": f"Could not fetch page: {e}"}), 502
     except Exception as e:
         return jsonify({"error": f"Summarization failed: {e}"}), 500
+
+
+# --- Cached content store ----------------------------------------------------
+# The cache is the single source of truth for raw extracted content; KG nodes
+# and vector records are derived projections (see cached_store.py). These routes
+# are additive — the existing /api/search, /api/kg/* and /api/rag/* flows are
+# unchanged.
+def _qs_bool(value):
+    if value is None:
+        return None
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+@app.route("/api/cache/extract", methods=["POST"])
+def api_cache_extract():
+    """Read tab step 1: extract MULTIPLE URLs at once. Fetches each page and
+    returns previews + full text (so ingest needn't re-fetch). Commits nothing;
+    flags items whose content is already cached."""
+    data = request.get_json(silent=True) or {}
+    raw = data.get("urls") or ""
+    if isinstance(raw, str):
+        urls = [u.strip() for u in re.split(r"[\n,]+", raw) if u.strip()]
+    else:
+        urls = [str(u).strip() for u in raw if str(u).strip()]
+    if not urls:
+        return jsonify({"error": "Provide at least one URL."}), 400
+
+    store = cached_store.get_store()
+    results, errors = [], []
+    for url in urls:
+        if not is_valid_url(url):
+            errors.append({"url": url, "error": "Invalid URL"})
+            continue
+        try:
+            ctx = extract_link_context(url)
+            content_hash = cached_store._sha256(ctx["context"])
+            # url-kind items dedupe on the URL (not the body hash), so check the
+            # same id ingest() will use — matches even if the page text drifted.
+            rid = cached_store.url_cache_id(ctx["url"])
+            existing = store.get(rid)
+            results.append({
+                "url": ctx["url"], "title": ctx["title"], "snippet": ctx["snippet"],
+                "text": ctx["context"], "chars": ctx["chars"],
+                "content_hash": content_hash,
+                "already_cached": existing is not None,
+                "cache_id": rid if existing else None,
+            })
+        except requests.HTTPError as e:
+            errors.append({"url": url, "error": f"HTTP {e.response.status_code}"})
+        except requests.RequestException as e:
+            errors.append({"url": url, "error": str(e)})
+        except Exception as e:  # noqa: BLE001
+            errors.append({"url": url, "error": str(e)})
+    return jsonify({"results": results, "errors": errors})
+
+
+@app.route("/api/cache/ingest", methods=["POST"])
+def api_cache_ingest():
+    """Persist items into the cached store. Each item supplies already-extracted
+    ``text`` (from /api/cache/extract — no re-fetch), or just a ``url`` (fetched
+    once here), or pasted ``text`` with no url. Idempotent by content hash."""
+    data = request.get_json(silent=True) or {}
+    items = data.get("items")
+    if isinstance(items, dict):
+        items = [items]
+    if not items:
+        return jsonify({"error": "Provide one or more items to ingest."}), 400
+
+    store = cached_store.get_store()
+    out, errors, created, reused = [], [], 0, 0
+    for it in items:
+        url = (it.get("url") or "").strip()
+        text = it.get("text")
+        title = (it.get("source_title") or it.get("title") or "").strip()
+        tags = it.get("tags") if isinstance(it.get("tags"), list) else None
+        note = (it.get("note") or "").strip()
+        kind = (it.get("kind") or ("url" if url else "text")).strip()
+        try:
+            if text is None and url:
+                if not is_valid_url(url):
+                    errors.append({"url": url, "error": "Invalid URL"})
+                    continue
+                page = fetch_page(url)
+                text = page["text"]
+                title = title or page["title"]
+            text = text or ""
+            if len((text or "").strip()) < 1:
+                errors.append({"url": url or title, "error": "Empty content"})
+                continue
+            rec = cached_store.ingest(
+                kind=kind, source_url=url, source_title=title, raw_text=text,
+                tags=tags, note=note, origin=(it.get("origin") or "read_page"))
+            if rec.get("created"):
+                created += 1
+            else:
+                reused += 1
+            out.append({
+                "id": rec["id"], "source_title": rec["source_title"],
+                "source_url": rec["source_url"], "chars": rec["chars"],
+                "in_kg": rec["in_kg"], "vectorized": rec["vectorized"],
+                "created": rec.get("created", False),
+            })
+        except requests.HTTPError as e:
+            errors.append({"url": url, "error": f"HTTP {e.response.status_code}"})
+        except requests.RequestException as e:
+            errors.append({"url": url, "error": str(e)})
+        except Exception as e:  # noqa: BLE001
+            errors.append({"url": url or title, "error": str(e)})
+    return jsonify({"ok": True, "items": out, "created": created, "reused": reused,
+                    "errors": errors, "store_stats": store.stats()})
+
+
+@app.route("/api/cache/items")
+def api_cache_items():
+    """List cached items (no raw_text) for the KG/Q&A selectors and status badges.
+
+    ``needs_kg`` / ``needs_vectors`` are drift-aware views: an item qualifies if
+    it has NOT been projected yet OR its content changed since it was (so a
+    re-ingested page reappears in the picker for re-projection)."""
+    store = cached_store.get_store()
+    try:
+        limit = int(request.args.get("limit") or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    q = (request.args.get("q") or "").strip()
+    needs_kg = _qs_bool(request.args.get("needs_kg"))
+    needs_vectors = _qs_bool(request.args.get("needs_vectors"))
+    if needs_kg or needs_vectors:
+        # staleness is a cross-field condition; fetch without the plain flag filters.
+        items = store.list(q=q)
+    else:
+        items = store.list(
+            in_kg=_qs_bool(request.args.get("in_kg")),
+            vectorized=_qs_bool(request.args.get("vectorized")), q=q)
+    for it in items:
+        it["kg_stale"] = cached_store.kg_stale(it)
+        it["vector_stale"] = cached_store.vector_stale(it)
+    if needs_kg:
+        items = [it for it in items if (not it["in_kg"]) or it["kg_stale"]]
+    if needs_vectors:
+        items = [it for it in items if (not it["vectorized"]) or it["vector_stale"]]
+    if limit and limit > 0:
+        items = items[:limit]
+    st = store.stats()
+    return jsonify({"items": items,
+                    "counts": {"total": st["items"], "in_kg": st["in_kg"],
+                               "vectorized": st["vectorized"]},
+                    "backend": st["backend"]})
+
+
+@app.route("/api/cache/item/<item_id>", methods=["GET", "DELETE"])
+def api_cache_item(item_id):
+    store = cached_store.get_store()
+    if request.method == "DELETE":
+        # The cache is the source of truth, so deleting an item also removes the
+        # KG chunk nodes and vector-store document it projected into.
+        rec = store.get(item_id)
+        cleanup = {"kg_chunks_removed": 0, "vectors_removed": 0}
+        if rec is not None:
+            for cid in rec.get("kg_chunk_ids") or []:
+                for where in ("current", "overall"):
+                    if kg.remove_node(cid, where=where):
+                        cleanup["kg_chunks_removed"] += 1
+            if rec.get("vectorized"):
+                try:
+                    from vectorstore import VectorStore
+                    vs = VectorStore.load("library")
+                    cleanup["vectors_removed"] = vs.remove_doc(cached_store.projection_url(rec))
+                    vs.persist()
+                except Exception:  # noqa: BLE001
+                    pass
+        removed = store.delete(item_id)
+        return jsonify({"ok": removed, "cleanup": cleanup, "store_stats": store.stats()})
+    rec = store.get(item_id, with_text=True)
+    if rec is None:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(rec)
+
+
+@app.route("/api/cache/to-kg", methods=["POST"])
+def api_cache_to_kg():
+    """KG tab step 2: project SELECTED cached items into the graph WITHOUT
+    re-fetching. Stages chunks via the existing _ingest_chunks; integration
+    stays on the unchanged /api/kg/integrate flow."""
+    data = request.get_json(silent=True) or {}
+    ids = data.get("item_ids") or []
+    if isinstance(ids, str):
+        ids = [ids]
+    if not ids:
+        return jsonify({"error": "Select at least one cached item."}), 400
+    chunk_size, overlap, tags = _parse_options(data)
+    store = cached_store.get_store()
+    staged, errors, total = [], [], 0
+    for iid in ids:
+        rec = store.get(iid, with_text=True)
+        if rec is None:
+            errors.append({"item_id": iid, "error": "Not found"})
+            continue
+        text = rec.get("raw_text") or ""
+        if len(text.strip()) < 5:
+            errors.append({"item_id": iid, "error": "No cached text"})
+            continue
+        # Idempotent re-projection: drop any chunk nodes a prior projection left
+        # behind (in staging or already integrated) before re-staging, so a
+        # second convert / a drifted re-convert replaces rather than duplicates.
+        for old_id in rec.get("kg_chunk_ids") or []:
+            kg.remove_node(old_id, where="current")
+            kg.remove_node(old_id, where="overall")
+        url = cached_store.projection_url(rec)
+        item_tags = tags or rec.get("tags") or []
+        n, chunk_ids = _ingest_chunks(
+            text, source_title=rec["source_title"], source_url=url,
+            tags=item_tags, chunk_size=chunk_size, overlap=overlap)
+        store.set_flags(iid, in_kg=True, kg_chunk_ids=chunk_ids,
+                        kg_projected_hash=rec.get("content_hash", ""))
+        staged.append({"item_id": iid, "chunks": n})
+        total += n
+    return jsonify({"ok": True, "staged": staged, "errors": errors,
+                    "total_chunks": total, "stats": kg.stats()})
+
+
+@app.route("/api/cache/to-vectors", methods=["POST"])
+def api_cache_to_vectors():
+    """Q&A step 3: vectorize SELECTED cached items into the RAG library WITHOUT
+    re-fetching. Response shape matches /api/rag/ingest so rag.js reuses it."""
+    data = request.get_json(silent=True) or {}
+    ids = data.get("item_ids") or []
+    if isinstance(ids, str):
+        ids = [ids]
+    if not ids:
+        return jsonify({"error": "Select at least one cached item."}), 400
+    provider = (data.get("provider") or "auto").strip().lower()
+    model = (data.get("model") or "").strip()
+    store = cached_store.get_store()
+    records, missing = [], []
+    for iid in ids:
+        rec = store.get(iid, with_text=True)
+        if rec is None or not (rec.get("raw_text") or "").strip():
+            missing.append(iid)
+            continue
+        records.append(rec)
+    if not records:
+        return jsonify({"error": "No cached text found for the selected items."}), 400
+    try:
+        import pipeline
+        result = pipeline.ingest_cached_items(records, provider=provider, model=model)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+    hash_by_id = {rec["id"]: rec.get("content_hash", "") for rec in records}
+    for r in result.get("results", []):
+        cid = r.get("cache_id")
+        if cid:
+            store.set_flags(cid, vectorized=True,
+                            vector_doc_id=pipeline._slug(r.get("url") or ""),
+                            vector_projected_hash=hash_by_id.get(cid, ""))
+    if missing:
+        result.setdefault("errors", []).extend(
+            {"cache_id": m, "error": "No cached text"} for m in missing)
+    result["store_stats"] = store.stats()
+    return jsonify(result)
 
 
 @app.route("/api/kg/stats")
@@ -1140,15 +1401,19 @@ def api_rag_experiment():
 
 
 def _ingest_chunks(text, *, source_title, source_url, tags, chunk_size, overlap):
+    """Stage chunks into the KG. Returns ``(total, chunk_ids)`` so callers that
+    project from the cached store can record which chunk nodes were created."""
     chunks = ingestion.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
     total = len(chunks)
     if total == 0:
-        return 0
+        return 0, []
+    chunk_ids = []
     for i, c in enumerate(chunks, start=1):
         title = source_title if total == 1 else f"{source_title} [{i}/{total}]"
         chunk_tags = list(tags) + ([f"part:{i}/{total}"] if total > 1 else [])
-        kg.add_chunk(c, source_url=source_url, source_title=title, tags=chunk_tags)
-    return total
+        node = kg.add_chunk(c, source_url=source_url, source_title=title, tags=chunk_tags)
+        chunk_ids.append(node["id"])
+    return total, chunk_ids
 
 
 def _parse_options(data):
@@ -1181,7 +1446,7 @@ def api_kg_ingest_text():
     chunk_size, overlap, tags = _parse_options(data)
     source_title = (data.get("source_title") or "Pasted document").strip()
     source_url = (data.get("source_url") or "").strip()
-    total = _ingest_chunks(
+    total, _ = _ingest_chunks(
         text, source_title=source_title, source_url=source_url,
         tags=tags, chunk_size=chunk_size, overlap=overlap,
     )
@@ -1214,7 +1479,7 @@ def api_kg_ingest_urls():
             continue
         try:
             page = fetch_page(url)
-            n = _ingest_chunks(
+            n, _ = _ingest_chunks(
                 page["text"], source_title=page["title"], source_url=url,
                 tags=tags, chunk_size=chunk_size, overlap=overlap,
             )
@@ -1250,7 +1515,7 @@ def api_kg_ingest_files():
         try:
             content = f.read()
             text = ingestion.parse_file(name, content)
-            n = _ingest_chunks(
+            n, _ = _ingest_chunks(
                 text, source_title=name, source_url="",
                 tags=tags, chunk_size=chunk_size, overlap=overlap,
             )

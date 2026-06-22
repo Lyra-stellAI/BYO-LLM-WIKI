@@ -134,10 +134,13 @@ def _contextualize(model, title: str, date: str, sections: list[str]) -> tuple[s
     return overview, summaries
 
 
-def ingest_url(url: str, model, vs: VectorStore, *, section_size: int = 2500,
-               chunk_size: int = 800, overlap: int = 120) -> dict:
-    page = _fetch(url)
-    title, date, text = page["title"], page["date"], page["text"]
+def ingest_url(url: str, model, vs: VectorStore, *, page: dict | None = None,
+               section_size: int = 2500, chunk_size: int = 800, overlap: int = 120) -> dict:
+    # ``page`` lets a caller supply already-extracted content (e.g. from the
+    # cached store) so we vectorize without re-fetching the network; otherwise
+    # fetch it here as before. A supplied page may omit ``date``.
+    page = page if page is not None else _fetch(url)
+    title, date, text = page["title"], page.get("date", ""), page["text"]
     if len(text) < 200:
         raise PipelineError(f"Too little text extracted from {url}")
 
@@ -208,6 +211,54 @@ def ingest_urls(urls: list[str], *, provider: str = "auto", model: str | None = 
                 on_progress(r)
         except Exception as exc:  # noqa: BLE001
             errors.append({"url": url, "error": str(exc)})
+            if on_progress:
+                on_progress({"url": url, "error": str(exc)})
+    vs.persist()
+    return {
+        "ingested_at": datetime.now(timezone.utc).isoformat(),
+        "provider": rp, "model": rm,
+        "results": results, "errors": errors,
+        "vector_stats": vs.stats(), "graph_stats": kg.stats()["overall"],
+    }
+
+
+def ingest_cached_items(records: list[dict], *, provider: str = "auto",
+                        model: str | None = None, vs_name: str = "library",
+                        section_size: int = 2500, chunk_size: int = 800,
+                        overlap: int = 120, on_progress=None) -> dict:
+    """Vectorize already-cached content WITHOUT re-fetching the network.
+
+    Each record must carry ``raw_text`` (+ source_title/source_url/date). Feeds
+    the text straight into ``ingest_url`` at the cached-page seam; everything
+    downstream (contextual summaries, embeddings, vector store, KG mirror) is
+    identical to a fresh network ingest. Returns the same shape as
+    ``ingest_urls`` (so the front-end reuses its renderer) plus a per-result
+    ``cache_id`` for flagging the source record vectorized."""
+    rp, rm = resolve_provider_model(provider, model)
+    if not rp:
+        raise PipelineError("No LLM provider configured for contextual summaries.")
+    if not emb.embeddings_available():
+        raise PipelineError("OPENAI_API_KEY is required for embeddings.")
+    try:
+        chat = build_chat_model(rp, rm, max_tokens=2000)
+    except ProviderError as exc:
+        raise PipelineError(str(exc)) from exc
+
+    vs = VectorStore.load(vs_name)
+    results, errors = [], []
+    for rec in records:
+        url = (rec.get("source_url") or "").strip() or f"cache:{rec['id']}"
+        try:
+            page = {"title": rec.get("source_title") or url, "url": url,
+                    "text": rec.get("raw_text") or "", "date": rec.get("date") or ""}
+            r = ingest_url(url, chat, vs, page=page, section_size=section_size,
+                           chunk_size=chunk_size, overlap=overlap)
+            r["cache_id"] = rec["id"]
+            results.append(r)
+            if on_progress:
+                on_progress(r)
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"url": url, "cache_id": rec.get("id"), "error": str(exc)})
             if on_progress:
                 on_progress({"url": url, "error": str(exc)})
     vs.persist()

@@ -60,10 +60,16 @@
     } catch (e) { /* ignore */ }
   }
 
+  // Both flows write to #ragIngestProgress, so only one may run at a time.
+  function lockIngest(on) {
+    ingestBtn.disabled = on;
+    if (cacheVectorizeBtn) cacheVectorizeBtn.disabled = on;
+  }
+
   ingestBtn.addEventListener("click", async () => {
     const list = urls.value.split("\n").map((u) => u.trim()).filter((u) => u.startsWith("http"));
     if (!list.length) { ingestProg.textContent = "Paste one or more URLs."; ingestProg.className = "ingest-progress error"; return; }
-    ingestBtn.disabled = true; const prev = ingestBtn.textContent; ingestBtn.textContent = "Ingesting…";
+    lockIngest(true); const prev = ingestBtn.textContent; ingestBtn.textContent = "Ingesting…";
     ingestProg.className = "ingest-progress"; ingestProg.textContent = `Ingesting ${list.length} page(s)… this can take a few minutes.`;
     try {
       const res = await fetch("/api/rag/ingest", {
@@ -79,8 +85,69 @@
       if (window.kg && window.kg.refresh) window.kg.refresh();
     } catch (e) {
       ingestProg.className = "ingest-progress error"; ingestProg.textContent = e.message;
-    } finally { ingestBtn.disabled = false; ingestBtn.textContent = prev; }
+    } finally { lockIngest(false); ingestBtn.textContent = prev; }
   });
+
+  // --- Vectorize already-cached content (no re-fetch) -----------------------
+  const cacheList = $("#ragCacheList");
+  const cacheAll = $("#ragCacheAll");
+  const cacheVectorizeBtn = $("#ragCacheVectorizeBtn");
+
+  function renderCachePicker(items) {
+    if (!items.length) {
+      cacheList.innerHTML = '<div class="cache-empty">No cached items available. Extract some URLs on the Read tab first.</div>';
+      return;
+    }
+    cacheList.innerHTML = items.map((it) => `
+      <label class="cache-row">
+        <input type="checkbox" value="${esc(it.id)}" />
+        <span class="cache-row-main">
+          <span class="cache-row-title">${esc(it.source_title || it.source_url || it.id)}${it.vector_stale ? ' <span class="badge">drifted</span>' : ""}</span>
+          <span class="cache-row-meta">${(it.chars || 0).toLocaleString()} chars${it.source_url ? " · " + esc(it.source_url) : ""}</span>
+        </span>
+      </label>
+    `).join("");
+  }
+
+  async function loadRagCache() {
+    if (!cacheList) return;
+    cacheList.innerHTML = '<div class="cache-empty">Loading…</div>';
+    if (cacheAll) cacheAll.checked = false;
+    try {
+      const data = await fetch("/api/cache/items?needs_vectors=true").then((r) => r.json());
+      renderCachePicker(data.items || []);
+    } catch (e) {
+      cacheList.innerHTML = `<div class="cache-empty">Could not load cache: ${esc(e.message)}</div>`;
+    }
+  }
+
+  if (cacheVectorizeBtn) cacheVectorizeBtn.addEventListener("click", async () => {
+    const ids = [...cacheList.querySelectorAll("input[type=checkbox]:checked")].map((c) => c.value);
+    if (!ids.length) { ingestProg.textContent = "Select at least one cached item."; ingestProg.className = "ingest-progress error"; return; }
+    lockIngest(true); const prev = cacheVectorizeBtn.textContent; cacheVectorizeBtn.textContent = "Vectorizing…";
+    ingestProg.className = "ingest-progress"; ingestProg.textContent = `Vectorizing ${ids.length} cached item(s)… this can take a few minutes.`;
+    try {
+      const res = await fetch("/api/cache/to-vectors", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_ids: ids, ...providerModel() }),
+      }).then((r) => r.json());
+      if (res.error) throw new Error(res.error);
+      const ok = (res.results || []).length, errs = (res.errors || []).length;
+      ingestProg.className = "ingest-progress ok";
+      ingestProg.textContent = `Vectorized ${ok} item(s)${errs ? `, ${errs} failed` : ""}. ` +
+        `${res.vector_stats.chunks} chunks across ${res.vector_stats.sections} sections.`;
+      await loadStats();
+      await loadRagCache();
+      if (window.kg && window.kg.refresh) window.kg.refresh();
+    } catch (e) {
+      ingestProg.className = "ingest-progress error"; ingestProg.textContent = e.message;
+    } finally { lockIngest(false); cacheVectorizeBtn.textContent = prev; }
+  });
+
+  if (cacheAll) cacheAll.addEventListener("change", () => {
+    cacheList.querySelectorAll("input[type=checkbox]").forEach((c) => { c.checked = cacheAll.checked; });
+  });
+  $("#ragCacheRefresh")?.addEventListener("click", loadRagCache);
 
   async function doAsk() {
     const q = question.value.trim(); if (!q) return;
@@ -138,9 +205,9 @@
   searchBtn.addEventListener("click", doSearch);
   question.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doAsk(); } });
 
-  // Refresh stats when the Library tab is opened.
+  // Refresh stats + the cache picker when the Library tab is opened.
   document.querySelectorAll('.tab[data-tab="rag"]').forEach((t) =>
-    t.addEventListener("click", () => { loadStats(); loadStatus(); }));
+    t.addEventListener("click", () => { loadStats(); loadStatus(); loadRagCache(); }));
 
-  loadStats(); loadStatus();
+  loadStats(); loadStatus(); loadRagCache();
 })();

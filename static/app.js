@@ -1,6 +1,7 @@
 const $ = (sel) => document.querySelector(sel);
 const queryEl = $("#query");
 const searchBtn = $("#searchBtn");
+const extractBtn = $("#extractBtn");
 const summarizeBtn = $("#summarizeBtn");
 const statusEl = $("#status");
 const resultsEl = $("#results");
@@ -33,6 +34,7 @@ function clearStatus() {
 
 function setBusy(busy) {
   searchBtn.disabled = busy;
+  if (extractBtn) extractBtn.disabled = busy;
   summarizeBtn.disabled = busy;
   queryEl.disabled = busy;
 }
@@ -70,6 +72,7 @@ function renderLinkContext(r) {
       <div class="summary-body context-extract">${escapeHTML(context)}</div>
       <div class="context-actions">
         <button class="btn btn-secondary" data-summarize="${escapeHTML(r.url)}">Summarize this</button>
+        <button class="btn btn-primary" data-ingest-store="1">Ingest to store</button>
         <button class="btn btn-accent" data-addkg-context="1">+ KG</button>
       </div>
     </article>
@@ -78,9 +81,141 @@ function renderLinkContext(r) {
     queryEl.value = r.url;
     doSummarize();
   });
+  resultsEl.querySelector("[data-ingest-store]")?.addEventListener("click", (e) => {
+    ingestToStore({ url: r.url || "", source_title: r.title || "", text: context,
+                    kind: r.url ? "url" : "text" }, e.currentTarget);
+  });
   resultsEl.querySelector("[data-addkg-context]")?.addEventListener("click", () => {
     window.kg.openModal({ text: context, source_title: r.title || "", source_url: r.url || "" });
   });
+}
+
+// --- Cached store: extract many URLs, then ingest once for reuse everywhere --
+let extractItems = [];
+
+function parseUrls(text = "") {
+  return text.split(/[\s,]+/).map((s) => s.trim()).filter((s) => isUrl(s));
+}
+
+function errBlock(errors) {
+  if (!errors || !errors.length) return "";
+  return `<div class="status error">${errors.map((e) =>
+    `${escapeHTML(e.url || "")}: ${escapeHTML(e.error || "")}`).join("<br>")}</div>`;
+}
+
+function updateIngestAllCount() {
+  const allBtn = document.getElementById("ingestAllBtn");
+  if (!allBtn) return;
+  const n = extractItems.filter((r) => !r.already_cached).length;
+  if (n <= 0) allBtn.remove();
+  else allBtn.textContent = `Ingest all new (${n})`;
+}
+
+async function ingestToStore(item, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Caching…";
+  try {
+    const data = await postJSON("/api/cache/ingest", { items: [item] });
+    const it = (data.items || [])[0];
+    btn.textContent = it && it.created === false ? "Already cached ✓" : "Cached ✓";
+    // Keep extractItems in sync so "Ingest all new" won't re-send this one.
+    const idx = btn.dataset ? btn.dataset.ingest : undefined;
+    if (idx !== undefined && extractItems[Number(idx)]) {
+      extractItems[Number(idx)].already_cached = true;
+      updateIngestAllCount();
+    }
+    setStatus(`Cached "${escapeHTML(item.source_title || item.url || "item")}" — now reusable in the KG and Q&A tabs (no re-fetch).`, "info");
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = orig;
+    setStatus(escapeHTML(e.message), "error");
+  }
+}
+
+async function ingestAllNew(btn) {
+  const pending = extractItems.map((r, i) => ({ r, i })).filter(({ r }) => !r.already_cached);
+  if (!pending.length) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = "Caching…";
+  try {
+    const items = pending.map(({ r }) => ({ url: r.url, source_title: r.title, text: r.text }));
+    const data = await postJSON("/api/cache/ingest", { items });
+    const okUrls = new Set((data.items || []).map((it) => it.source_url));
+    pending.forEach(({ r, i }) => {
+      if (okUrls.has(r.url)) {
+        r.already_cached = true;
+        const b = resultsEl.querySelector(`[data-ingest="${i}"]`);
+        if (b) { b.disabled = true; b.textContent = "Cached ✓"; }
+      }
+    });
+    const errs = (data.errors || []).length;
+    setStatus(`Cached ${data.created} new item(s)${data.reused ? `, ${data.reused} already cached` : ""}${errs ? `, ${errs} failed` : ""}. Reusable in the KG and Q&A tabs.`, errs ? "error" : "info");
+    updateIngestAllCount();
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = orig;
+    setStatus(escapeHTML(e.message), "error");
+  }
+}
+
+function renderExtractResults(payload) {
+  const results = payload.results || [];
+  const errors = payload.errors || [];
+  extractItems = results;
+  if (!results.length) {
+    resultsEl.innerHTML = `<div class="status">No content could be extracted.</div>` + errBlock(errors);
+    return;
+  }
+  const newCount = results.filter((r) => !r.already_cached).length;
+  const header = `<div class="extract-header">
+    <span>Extracted ${results.length} page(s)${newCount < results.length ? ` · ${results.length - newCount} already cached` : ""}.</span>
+    ${newCount ? `<button class="btn btn-primary btn-sm" id="ingestAllBtn">Ingest all new (${newCount})</button>` : ""}
+  </div>`;
+  const cards = results.map((r, i) => `
+    <article class="result-card" data-idx="${i}">
+      <h3><a href="${escapeHTML(r.url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(r.title || r.url)}</a></h3>
+      <div class="url">${escapeHTML(r.url)}</div>
+      <div class="meta">
+        <span class="badge">${r.already_cached ? "cached" : "new"}</span>
+        <span>${(r.chars || 0).toLocaleString()} chars</span>
+      </div>
+      <p class="snippet">${escapeHTML(r.snippet || "")}</p>
+      <div class="context-actions">
+        <button class="btn btn-secondary" data-summarize="${escapeHTML(r.url)}">Summarize this</button>
+        <button class="btn btn-primary" data-ingest="${i}" ${r.already_cached ? "disabled" : ""}>${r.already_cached ? "Already cached ✓" : "Ingest to store"}</button>
+      </div>
+    </article>
+  `).join("");
+  resultsEl.innerHTML = header + errBlock(errors) + cards;
+  resultsEl.querySelectorAll("[data-summarize]").forEach((btn) =>
+    btn.addEventListener("click", () => { queryEl.value = btn.dataset.summarize; doSummarize(); }));
+  resultsEl.querySelectorAll("[data-ingest]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const r = extractItems[Number(btn.dataset.ingest)];
+      ingestToStore({ url: r.url, source_title: r.title, text: r.text }, btn);
+    }));
+  document.getElementById("ingestAllBtn")?.addEventListener("click", (e) => ingestAllNew(e.currentTarget));
+}
+
+async function doExtractAll() {
+  const urlList = parseUrls(queryEl.value);
+  if (!urlList.length) {
+    setStatus("Paste one or more URLs (comma / space separated) to extract.", "error");
+    return;
+  }
+  clearStatus(); resultsEl.innerHTML = ""; setBusy(true);
+  setStatus(`<span class="spinner"></span>Fetching ${urlList.length} page(s)…`);
+  try {
+    const data = await postJSON("/api/cache/extract", { urls: urlList });
+    clearStatus();
+    renderExtractResults(data);
+  } catch (e) {
+    setStatus(escapeHTML(e.message), "error");
+  } finally {
+    setBusy(false);
+  }
 }
 
 function renderSearchResults(data) {
@@ -231,6 +366,7 @@ async function doSummarize() {
 }
 
 searchBtn.addEventListener("click", doSearch);
+if (extractBtn) extractBtn.addEventListener("click", doExtractAll);
 summarizeBtn.addEventListener("click", doSummarize);
 providerEl.addEventListener("change", () => {
   updateModelSuggestions();
@@ -254,7 +390,10 @@ document.querySelectorAll(".tab").forEach((tab) => {
     document.querySelectorAll(".tab-panel").forEach((p) => {
       p.classList.toggle("active", p.id === `tab-${target}`);
     });
-    if (target === "kg" && window.kg && window.kg.refresh) window.kg.refresh();
+    if (target === "kg" && window.kg) {
+      window.kg.refresh && window.kg.refresh();
+      window.kg.loadCache && window.kg.loadCache();
+    }
   });
 });
 
