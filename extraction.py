@@ -12,6 +12,7 @@ import json
 import os
 import re
 
+import config
 from providers import PROVIDERS
 
 try:
@@ -23,6 +24,16 @@ try:
     from openai import OpenAI
 except ImportError:  # pragma: no cover
     OpenAI = None
+
+try:
+    from langsmith import traceable
+except ImportError:  # tracing is optional
+    def traceable(*dargs, **dkw):  # type: ignore
+        if len(dargs) == 1 and callable(dargs[0]) and not dkw:
+            return dargs[0]
+        def _wrap(fn):
+            return fn
+        return _wrap
 
 
 ENTITY_PROMPT = """You are extracting a knowledge graph from a passage of text.
@@ -87,6 +98,7 @@ def _parse_json_object(text: str) -> dict:
         return {}
 
 
+@traceable(name="kg.extract", tags=["kg", "extraction"])
 def extract_kg_llm(text: str, provider: str, model: str) -> dict:
     """Return ``{"entities": [...], "relations": [...]}`` for a passage."""
     prompt = ENTITY_PROMPT.format(text=text[:8000])
@@ -95,7 +107,7 @@ def extract_kg_llm(text: str, provider: str, model: str) -> dict:
         if provider == "anthropic":
             if Anthropic is None or not os.environ.get("ANTHROPIC_API_KEY"):
                 return {}
-            client = Anthropic()
+            client = config.traced_anthropic(Anthropic())
             msg = client.messages.create(
                 model=model, max_tokens=1500,
                 messages=[{"role": "user", "content": prompt}],
@@ -106,10 +118,10 @@ def extract_kg_llm(text: str, provider: str, model: str) -> dict:
             api_key = os.environ.get(cfg["env_key"])
             if not api_key:
                 return {}
-            client = OpenAI(
+            client = config.traced_openai(OpenAI(
                 api_key=api_key,
                 base_url=os.environ.get(cfg.get("base_url_env", ""), cfg.get("base_url")),
-            )
+            ))
             resp = client.chat.completions.create(
                 model=model, max_tokens=1500,
                 messages=[{"role": "user", "content": prompt}],
