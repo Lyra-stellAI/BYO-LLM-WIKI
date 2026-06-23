@@ -11,7 +11,6 @@ and a `runner.py` CLI. Inspired by LangChain's *llm-wiki* deep-agents example, b
 builds a private, on-disk library instead of syncing to a hub. **Local-first**: every
 store is plain JSON/SQLite under `data/`; cloud is opt-in.
 
-Check short demo @ "https://www.youtube.com/watch?v=23JRyHSQdCI"
 
 ## Features
 
