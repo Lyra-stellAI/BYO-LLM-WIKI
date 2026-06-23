@@ -69,11 +69,7 @@ def _fetch(url: str) -> dict:
         date = (t.get("datetime") or t.get_text(strip=True))[:10]
 
     title = (soup.title.string.strip() if soup.title and soup.title.string else url)
-    for tag in soup(["script", "style", "noscript", "iframe", "svg", "header",
-                     "footer", "nav", "aside", "form"]):
-        tag.decompose()
-    main = soup.find("article") or soup.find("main") or soup.body or soup
-    text = main.get_text(separator="\n", strip=True)
+    text = ingestion.main_text(soup)
     text = re.sub(r"\n{2,}", "\n\n", text)
     text = re.sub(r"[ \t]+", " ", text)
 

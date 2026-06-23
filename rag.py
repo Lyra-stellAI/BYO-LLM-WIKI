@@ -9,12 +9,22 @@ with LangSmith ``@traceable`` so runs show up in the configured project.
 from __future__ import annotations
 
 import json
+import os
 import re
 
 import embeddings as emb
 import memory
 from providers import ProviderError, build_chat_model, resolve_provider_model, resolve_judge
 from vectorstore import VectorStore
+
+# Token budget that separates the read regimes for a scoped "focus" (see
+# answer()): a focus that fits gets full-document ICL; a larger focus falls to
+# coarse-retrieve-sections-then-ICL. A rough chars/4 estimate is fine for a gate.
+ICL_BUDGET_TOKENS = int(os.environ.get("RAG_ICL_BUDGET_TOKENS", "100000"))
+
+
+def _est_tokens(text: str) -> int:
+    return max(1, len(text or "") // 4)
 
 try:  # tracing is optional
     from langsmith import traceable
@@ -91,22 +101,30 @@ def rerank(question: str, hits: list[dict], *, top_k: int,
 @traceable(name="rag.retrieve", tags=["rag", "retrieval", "knowledge-library"])
 def retrieve(question: str, *, k: int = 6, vs_name: str = "library",
              n_sections: int = 6, rerank_hits: bool = True,
-             mmr: bool = False, mmr_lambda: float = 0.5,
+             mmr: bool = False, mmr_lambda: float = 0.5, hybrid: bool = True,
              provider: str = "auto", model: str | None = None) -> list[dict]:
     vs = VectorStore.load(vs_name)
     if not vs.chunks:
         return []
     q = emb.embed_query(question, model=vs.embed_model)
+
+    def _candidates(n: int) -> list[dict]:
+        # Hybrid (dense + BM25, RRF-fused) by default; dense-only when hybrid off.
+        if hybrid:
+            return vs.search_hybrid(q, question, k=n, n_sections=n_sections)
+        return vs.search(q, k=n, n_sections=n_sections)
+
     if mmr:
-        # Document-aware MMR selects the final k directly (diversity is the goal).
+        # Document-aware MMR selects the final k directly (diversity is the goal;
+        # the dense path owns MMR, so hybrid is not applied here).
         hits = vs.search(q, k=k, n_sections=n_sections, mmr=True, mmr_lambda=mmr_lambda)
     elif rerank_hits:
-        # Over-fetch candidates, then LLM listwise re-rank down to k.
-        hits = vs.search(q, k=max(k * 4, 20), n_sections=n_sections)
+        # Over-fetch hybrid candidates, then LLM listwise re-rank down to k.
+        hits = _candidates(max(k * 4, 20))
         if hits:
             hits = rerank(question, hits, top_k=k, provider=provider, model=model)
     else:
-        hits = vs.search(q, k=k, n_sections=n_sections)
+        hits = _candidates(k)
     return hits
 
 
@@ -166,6 +184,139 @@ def _answer_from_hits(question: str, hits: list[dict], rp: str, rm: str,
                                          memory=memory_section))
 
 
+# --- In-context (ICL) answering over a scoped "focus" ------------------------
+_ICL_SYSTEM = (
+    "You answer questions using ONLY the documents provided below. Ground every "
+    "claim in them and cite inline as [n] by the document/section number. "
+    "Synthesis across the documents is expected — connect and compare facts they "
+    "jointly support — but do not use outside knowledge or invent facts. If the "
+    "documents genuinely lack the answer, say so."
+)
+_ICL_FORMAT = ("Respond in markdown:\n## Answer\n<concise answer with inline [n] "
+               "citations>\n\n## Key sources\n- [n] <title> — <url>")
+
+
+def _load_focus(focus_ids: list[str] | None) -> list[dict]:
+    """Load cached-store records (with raw_text) for a focus selection."""
+    if not focus_ids:
+        return []
+    import cached_store
+    store = cached_store.get_store()
+    out = []
+    for fid in focus_ids:
+        rec = store.get(fid, with_text=True)
+        if rec and (rec.get("raw_text") or "").strip():
+            out.append(rec)
+    return out
+
+
+def _icl_generate(question: str, blocks: list[dict], rp: str, rm: str,
+                  memory_section: str = "") -> str:
+    """Answer from full document/section text held in context. For Anthropic, the
+    document prefix is sent with prompt caching so repeat questions on the same
+    focus are ~0.1x cost + lower latency; other providers stuff it uncached."""
+    docs_text = "\n\n".join(
+        f"[{i + 1}] {b['title']}" + (f" — {b['section']}" if b.get("section") else "")
+        + f" ({b['url']})\n{b['text']}"
+        for i, b in enumerate(blocks))
+    user = ((memory_section + "\n") if memory_section else "") + \
+        f"Question: {question.strip()}\n\n{_ICL_FORMAT}"
+
+    if rp == "anthropic":
+        try:
+            import anthropic
+            import config
+            client = config.traced_anthropic(anthropic.Anthropic())
+            msg = client.messages.create(
+                model=rm, max_tokens=1500,
+                system=[
+                    {"type": "text", "text": _ICL_SYSTEM},
+                    # Stable, large prefix → cache it; the volatile question is in
+                    # the user turn after it, so the prefix stays byte-identical.
+                    {"type": "text", "text": docs_text,
+                     "cache_control": {"type": "ephemeral"}},
+                ],
+                messages=[{"role": "user", "content": user}],
+            )
+            return "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+        except Exception:  # noqa: BLE001  (fall back to the generic provider path)
+            pass
+    # Generic provider path (no prompt caching): one stuffed prompt.
+    try:
+        chat = build_chat_model(rp, rm, max_tokens=1500)
+    except ProviderError as exc:
+        raise RagError(str(exc)) from exc
+    return _gen(chat, f"{_ICL_SYSTEM}\n\n{docs_text}\n\n{user}")
+
+
+def _icl_citations(blocks: list[dict]) -> list[dict]:
+    return [{"n": i + 1, "title": b["title"], "url": b["url"],
+             "section_title": b.get("section"), "preview": (b["text"][:240])}
+            for i, b in enumerate(blocks)]
+
+
+def _answer_icl_docs(question: str, focus: list[dict], rp: str, rm: str,
+                     memory_section: str) -> tuple[str, list[dict], dict]:
+    """Regime 1: the focus fits the budget — ICL the FULL text of each doc."""
+    blocks = [{"title": it.get("source_title") or it.get("source_url") or it["id"],
+               "url": it.get("source_url") or f"cache:{it['id']}",
+               "text": it.get("raw_text") or ""} for it in focus]
+    text = _icl_generate(question, blocks, rp, rm, memory_section)
+    scope = {"mode": "icl-documents", "documents": len(blocks),
+             "tokens": sum(_est_tokens(b["text"]) for b in blocks)}
+    return text, _icl_citations(blocks), scope
+
+
+def _answer_icl_sections(question: str, focus: list[dict], rp: str, rm: str,
+                         memory_section: str, vs_name: str) -> tuple[str, list[dict], dict]:
+    """Regime 2: the focus is too big to stuff whole — coarse-retrieve the most
+    relevant SECTIONS within the focus docs, reconstruct each section's full
+    text, fill the budget best-first, and ICL those sections."""
+    vs = VectorStore.load(vs_name)
+    focus_urls = {(it.get("source_url") or f"cache:{it['id']}") for it in focus}
+    ranked = vs.rank_sections(emb.embed_query(question, model=vs.embed_model),
+                              restrict_urls=focus_urls) if vs.sections else []
+    blocks, used = [], 0
+    for s in ranked:
+        txt = vs.section_full_text(s["id"])
+        if not txt:
+            continue
+        t = _est_tokens(txt)
+        if blocks and used + t > ICL_BUDGET_TOKENS:
+            break
+        blocks.append({"title": s.get("title") or s.get("url"),
+                       "url": s.get("url"),
+                       "section": s.get("section_title") or s.get("name"),
+                       "text": txt})
+        used += t
+        if used >= ICL_BUDGET_TOKENS:
+            break
+
+    if not blocks:
+        # Focus docs aren't vectorized (no sections) — degrade to full-doc ICL
+        # truncated to the budget, in selection order.
+        for it in focus:
+            raw = it.get("raw_text") or ""
+            room = ICL_BUDGET_TOKENS - used
+            if room <= 0:
+                break
+            snippet = raw[: room * 4]
+            blocks.append({"title": it.get("source_title") or it["id"],
+                           "url": it.get("source_url") or f"cache:{it['id']}",
+                           "text": snippet})
+            used += _est_tokens(snippet)
+        text = _icl_generate(question, blocks, rp, rm, memory_section)
+        return text, _icl_citations(blocks), {
+            "mode": "icl-truncated", "documents": len(blocks), "tokens": used,
+            "note": "focus not vectorized; truncated to budget"}
+
+    text = _icl_generate(question, blocks, rp, rm, memory_section)
+    scope = {"mode": "icl-sections", "sections": len(blocks),
+             "documents": len({b["url"] for b in blocks}),
+             "available_sections": len(ranked), "tokens": used}
+    return text, _icl_citations(blocks), scope
+
+
 def answer_with_contexts(question: str, *, provider: str = "auto", model: str | None = None,
                          k: int = 6, vs_name: str = "library",
                          rerank_hits: bool = True, mmr: bool = False,
@@ -189,7 +340,16 @@ def answer_with_contexts(question: str, *, provider: str = "auto", model: str | 
 def answer(question: str, *, provider: str = "auto", model: str | None = None,
            k: int = 6, vs_name: str = "library",
            rerank_hits: bool = True, mmr: bool = False, mmr_lambda: float = 0.5,
+           hybrid: bool = True, focus_ids: list[str] | None = None,
            use_memory: bool = True, write_back: bool = True) -> dict:
+    """Answer a question with the regime that fits the scope:
+
+    - **no focus** → hybrid RAG over the whole library (retrieve top passages).
+    - **focus that fits the budget** → ICL the full text of the focus documents.
+    - **focus too big** → coarse-retrieve the most relevant sections within the
+      focus, then ICL those whole sections.
+
+    ``focus_ids`` are cached-store item ids (the user's selection)."""
     if not question or not question.strip():
         raise RagError("A question is required.")
     rp, rm = resolve_provider_model(provider, model)
@@ -208,17 +368,35 @@ def answer(question: str, *, provider: str = "auto", model: str | None = None,
                               "citable; verify against the passages below):\n"
                               + memory.format_memories(mems) + "\n")
 
-    hits = retrieve(question, k=k, vs_name=vs_name,
-                    rerank_hits=rerank_hits, mmr=mmr, mmr_lambda=mmr_lambda, provider=rp, model=rm)
-    if not hits:
-        return {"answer": "The knowledge library is empty — ingest some pages first.",
-                "citations": [], "provider": rp, "model": rm, "memories_used": mems}
-    text = _answer_from_hits(question, hits, rp, rm, memory_section=memory_section)
-    citations = [{
-        "n": i + 1, "chunk_id": h["id"], "title": h.get("title"), "url": h.get("url"),
-        "date": h.get("date"), "section_title": h.get("section_title"),
-        "score": h.get("score"), "preview": h.get("preview"),
-    } for i, h in enumerate(hits)]
+    # --- regime router ------------------------------------------------------
+    focus = _load_focus(focus_ids)
+    if focus:
+        scoped = sum(_est_tokens(it.get("raw_text") or "") for it in focus)
+        if scoped <= ICL_BUDGET_TOKENS:
+            regime = "icl-documents"
+            text, citations, scope = _answer_icl_docs(question, focus, rp, rm, memory_section)
+        else:
+            regime = "icl-sections"
+            text, citations, scope = _answer_icl_sections(
+                question, focus, rp, rm, memory_section, vs_name)
+    else:
+        regime = "rag"
+        hits = retrieve(question, k=k, vs_name=vs_name, rerank_hits=rerank_hits,
+                        mmr=mmr, mmr_lambda=mmr_lambda, hybrid=hybrid, provider=rp, model=rm)
+        if not hits:
+            return {"answer": "The knowledge library is empty — ingest or vectorize "
+                    "some pages first.", "citations": [], "provider": rp, "model": rm,
+                    "memories_used": mems, "regime": regime,
+                    "scope": {"mode": "rag", "passages": 0}}
+        text = _answer_from_hits(question, hits, rp, rm, memory_section=memory_section)
+        citations = [{
+            "n": i + 1, "chunk_id": h["id"], "title": h.get("title"), "url": h.get("url"),
+            "date": h.get("date"), "section_title": h.get("section_title"),
+            "score": h.get("score"), "preview": h.get("preview"),
+        } for i, h in enumerate(hits)]
+        scope = {"mode": "rag", "passages": len(hits),
+                 "documents": len({h.get("url") for h in hits}),
+                 "reranked": rerank_hits, "mmr": mmr, "hybrid": hybrid}
 
     # Write-back: reinforce used memories and file this answer for next time.
     if write_back:
@@ -235,7 +413,8 @@ def answer(question: str, *, provider: str = "auto", model: str | None = None,
             pass
 
     return {"answer": text, "citations": citations, "provider": rp, "model": rm,
-            "k": k, "reranked": rerank_hits, "mmr": mmr, "memories_used": mems}
+            "k": k, "reranked": rerank_hits, "mmr": mmr, "memories_used": mems,
+            "regime": regime, "scope": scope}
 
 
 # --- Evaluation --------------------------------------------------------------

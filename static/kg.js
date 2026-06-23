@@ -397,6 +397,26 @@
     });
   }
 
+  // --- view controls (zoom / pan / fit) over the vis-network canvas ----------
+  const KG_ZOOM = 1.3, KG_PAN = 120;   // zoom factor per click; pan px (screen-constant)
+  function kgView(action) {
+    if (!network) return;
+    const anim = { duration: 220, easingFunction: "easeInOutQuad" };
+    if (action === "fit") return void network.fit({ animation: anim });
+    const scale = network.getScale() || 1;
+    if (action === "zoomin") return void network.moveTo({ scale: scale * KG_ZOOM, animation: anim });
+    if (action === "zoomout") return void network.moveTo({ scale: scale / KG_ZOOM, animation: anim });
+    // Pan: shift the view center; divide by scale so on-screen movement is constant.
+    const pos = network.getViewPosition();
+    const d = KG_PAN / scale;
+    const delta = { up: [0, -d], down: [0, d], left: [-d, 0], right: [d, 0] }[action];
+    if (delta) network.moveTo({ position: { x: pos.x + delta[0], y: pos.y + delta[1] }, animation: anim });
+  }
+  document.getElementById("kgControls")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-kg-view]");
+    if (btn) kgView(btn.dataset.kgView);
+  });
+
   integrateBtn.addEventListener("click", async () => {
     integrateBtn.disabled = true;
     const prev = integrateBtn.textContent;

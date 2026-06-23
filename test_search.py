@@ -149,6 +149,30 @@ def test_pdf_url_detected_and_parsed_not_as_html():
         app.requests.get, app.ingestion.parse_file = orig_get, orig_parse
 
 
+def test_html_extraction_strips_citation_boilerplate():
+    """Scholarly-page chrome (arXiv extra-services / labs tabs / BibTeX export
+    widgets) must not leak into extracted text — otherwise it pollutes the KG
+    with 'Bibliographic Explorer / BibTeX citation / Loading…' junk chunks."""
+    import ingestion
+    from bs4 import BeautifulSoup
+    html = """<html><head><title>Paper</title></head><body>
+      <nav class="site-nav">Home Login</nav>
+      <article><h1>Paper</h1>
+        <blockquote class="abstract">A method for context engineering.</blockquote>
+        <p>The body has the real findings.</p></article>
+      <div class="extra-services">
+        <div class="labstabs">Bibliographic Explorer Toggle Bibliographic and Citation Tools</div>
+        <div class="bib-cite">ADS Google Scholar Semantic Scholar export BibTeX citation</div>
+        <div id="bibtex-modal" aria-hidden="true">BibTeX formatted citation loading... Data provided by: Bookmark</div></div>
+      <div class="related-papers">Related Papers recommend</div>
+      <footer>arXiv footer</footer></body></html>"""
+    text = ingestion.main_text(BeautifulSoup(html, "lxml"))
+    for junk in ("Bibliographic Explorer", "BibTeX", "Google Scholar", "Semantic Scholar",
+                 "loading", "Bookmark", "Related Papers", "Home Login", "arXiv footer"):
+        assert junk.lower() not in text.lower(), f"boilerplate leaked: {junk!r}"
+    assert "context engineering" in text and "real findings" in text  # content kept
+
+
 # --- live test against the three reference links ----------------------------
 
 def test_live_links_extract_context():

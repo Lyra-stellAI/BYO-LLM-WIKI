@@ -107,14 +107,8 @@ def fetch_page(url: str) -> dict:
         return {"title": _pdf_title(resp.content, url), "url": url, "text": text}
 
     soup = BeautifulSoup(resp.text, "lxml")
-
-    for tag in soup(["script", "style", "noscript", "iframe", "svg", "header", "footer", "nav", "aside", "form"]):
-        tag.decompose()
-
     title = (soup.title.string.strip() if soup.title and soup.title.string else url)
-
-    main = soup.find("article") or soup.find("main") or soup.body or soup
-    text = main.get_text(separator="\n", strip=True)
+    text = ingestion.main_text(soup)
     text = re.sub(r"\n{2,}", "\n\n", text)
     text = re.sub(r"[ \t]+", " ", text)
 
@@ -1300,7 +1294,8 @@ def api_rag_search():
     q = (data.get("query") or data.get("question") or "").strip()
     if not q:
         return jsonify({"error": "A query is required."}), 400
-    k = int(data.get("k") or 8)
+    # "Show more" grows k from the client; cap it so re-rank stays bounded.
+    k = max(1, min(int(data.get("k") or 10), 50))
     rerank = bool(data.get("rerank", True))
     mmr = bool(data.get("mmr", False))
     try:
@@ -1322,10 +1317,16 @@ def api_rag_ask():
     k = int(data.get("k") or 6)
     rerank = bool(data.get("rerank", True))
     mmr = bool(data.get("mmr", False))
+    hybrid = bool(data.get("hybrid", True))
+    # Optional "focus": cached-item ids to scope the answer (drives ICL regimes).
+    item_ids = data.get("item_ids") or None
+    if isinstance(item_ids, str):
+        item_ids = [item_ids]
     try:
         import rag
         return jsonify(rag.answer(question, provider=provider, model=model,
-                                  k=k, rerank_hits=rerank, mmr=mmr))
+                                  k=k, rerank_hits=rerank, mmr=mmr, hybrid=hybrid,
+                                  focus_ids=item_ids))
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": str(e)}), 500
 

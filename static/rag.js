@@ -149,6 +149,61 @@
   });
   $("#ragCacheRefresh")?.addEventListener("click", loadRagCache);
 
+  // --- Focus: scope the answer to specific cached docs (drives ICL regimes) --
+  const focusList = $("#ragFocusList");
+  const focusAll = $("#ragFocusAll");
+
+  function renderFocusPicker(items) {
+    if (!items.length) {
+      focusList.innerHTML = '<div class="cache-empty">No cached items yet — add some on the Read tab.</div>';
+      return;
+    }
+    focusList.innerHTML = items.map((it) => `
+      <label class="cache-row">
+        <input type="checkbox" value="${esc(it.id)}" />
+        <span class="cache-row-main">
+          <span class="cache-row-title">${esc(it.source_title || it.source_url || it.id)}${it.vectorized ? ' <span class="badge cache-b-vec">Q&amp;A</span>' : ""}</span>
+          <span class="cache-row-meta">${(it.chars || 0).toLocaleString()} chars${it.source_url ? " · " + esc(it.source_url) : ""}</span>
+        </span>
+      </label>`).join("");
+  }
+
+  async function loadFocusList() {
+    if (!focusList) return;
+    focusList.innerHTML = '<div class="cache-empty">Loading…</div>';
+    if (focusAll) focusAll.checked = false;
+    try {
+      const data = await fetch("/api/cache/items").then((r) => r.json());
+      renderFocusPicker(data.items || []);
+    } catch (e) {
+      focusList.innerHTML = `<div class="cache-empty">Could not load: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function selectedFocusIds() {
+    return focusList ? [...focusList.querySelectorAll("input[type=checkbox]:checked")].map((c) => c.value) : [];
+  }
+
+  // Plain "where the answer came from" — the internal strategy (full docs vs
+  // sections vs library retrieval) is an implementation detail, not shown.
+  function sourceNote(regime, scope) {
+    scope = scope || {};
+    if (regime && regime.indexOf("icl") === 0) {
+      const n = scope.documents || 0;
+      return n ? `from ${n} selected document${n > 1 ? "s" : ""}` : "from your selection";
+    }
+    if (regime === "rag") {
+      const n = scope.documents || scope.passages || 0;
+      return n ? `from ${n} source${n > 1 ? "s" : ""} in your library` : "from your library";
+    }
+    return "";
+  }
+
+  if (focusAll) focusAll.addEventListener("change", () => {
+    focusList.querySelectorAll("input[type=checkbox]").forEach((c) => { c.checked = focusAll.checked; });
+  });
+  $("#ragFocusRefresh")?.addEventListener("click", loadFocusList);
+
   async function doAsk() {
     const q = question.value.trim(); if (!q) return;
     askBtn.disabled = true; const prev = askBtn.textContent; askBtn.textContent = "Thinking…";
@@ -157,12 +212,13 @@
       const res = await fetch("/api/rag/ask", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: q, mmr: mmrToggle.checked,
-          rerank: document.querySelector("#ragRerank")?.checked || false, ...providerModel() }),
+          rerank: document.querySelector("#ragRerank")?.checked || false,
+          item_ids: selectedFocusIds(), ...providerModel() }),
       }).then((r) => r.json());
       if (res.error) throw new Error(res.error);
       let html = `<div class="ask-body">${mdLite(res.answer || "")}</div>`;
       if (res.citations && res.citations.length) {
-        html += `<div class="ask-citations"><h4>Retrieved passages</h4>` + res.citations.map((c) =>
+        html += `<div class="ask-citations"><h4>Sources</h4>` + res.citations.map((c) =>
           `<div class="cite"><span class="cite-id">[${c.n}]</span> ` +
           `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.title || c.url)}</a> ` +
           `<span style="color:var(--muted)">· ${esc(c.date || "n/a")} · score ${esc(String(c.score))}</span>` +
@@ -171,43 +227,56 @@
       const used = [res.provider, res.model].filter(Boolean).join(" · ");
       const memN = (res.memories_used || []).length;
       const memNote = memN ? ` · recalled ${memN} ${memN === 1 ? "memory" : "memories"}` : "";
-      if (used) html += `<div class="ask-foot">Answered by ${esc(used)}${res.mmr ? " · MMR" : ""}${res.reranked ? " · re-ranked" : ""}${memNote}</div>`;
+      const note = sourceNote(res.regime, res.scope);
+      if (used) html += `<div class="ask-foot">Answered by ${esc(used)}${note ? " · " + esc(note) : ""}${memNote}</div>`;
       show(html);
     } catch (e) { show(`<div style="color:var(--error)">${esc(e.message)}</div>`); }
     finally { askBtn.disabled = false; askBtn.textContent = prev; }
   }
 
-  async function doSearch() {
+  const SEARCH_BASE = 10, SEARCH_STEP = 10, SEARCH_MAX = 50;  // initial / per-click / cap (matches server)
+  let searchK = SEARCH_BASE, lastSearchQ = "";
+
+  async function doSearch(more = false) {
     const q = question.value.trim(); if (!q) return;
+    // A fresh query resets the count; "Show more" grows it for the same query.
+    if (more && q === lastSearchQ) searchK += SEARCH_STEP;
+    else { searchK = SEARCH_BASE; lastSearchQ = q; }
     searchBtn.disabled = true; const prev = searchBtn.textContent; searchBtn.textContent = "Searching…";
     show(`<div class="ask-thinking"><span class="spinner"></span>Hierarchical retrieval…</div>`);
     try {
       const res = await fetch("/api/rag/search", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: q, k: 8, mmr: mmrToggle.checked,
+        body: JSON.stringify({ query: q, k: searchK, mmr: mmrToggle.checked,
           rerank: document.querySelector("#ragRerank")?.checked || false }),
       }).then((r) => r.json());
       if (res.error) throw new Error(res.error);
       if (!res.hits || !res.hits.length) { show(`<div class="ask-note">No matches yet — ingest some pages first.</div>`); return; }
-      const html = `<div class="ask-citations"><h4>Top passages</h4>` + res.hits.map((h, i) =>
+      let html = `<div class="ask-citations"><h4>Top passages (${res.hits.length})</h4>` + res.hits.map((h, i) =>
         `<div class="cite"><span class="cite-id">[${i + 1}]</span> ` +
         `<a href="${esc(h.url)}" target="_blank" rel="noopener noreferrer">${esc(h.title || h.url)}</a> ` +
         `<span style="color:var(--muted)">· ${esc(h.date || "n/a")} · score ${esc(String(h.score))} (chunk ${esc(String(h.chunk_score))} / sec ${esc(String(h.section_score))})</span>` +
         `<div class="cite-prev"><em>${esc(h.contextual_summary || "")}</em><br>${esc(h.preview || h.text || "")}</div>` +
         ((h.graph && h.graph.entities && h.graph.entities.length) ? `<div class="cite-prev">entities: ${esc(h.graph.entities.join(", "))}</div>` : "") +
         `</div>`).join("") + `</div>`;
+      // Offer "Show more" only when we got a full page back (more may exist)
+      // and we haven't hit the cap.
+      if (res.hits.length >= searchK && searchK < SEARCH_MAX) {
+        html += `<div class="ask-more"><button id="ragSearchMore" class="btn btn-secondary btn-sm" type="button">Show more results</button></div>`;
+      }
       show(html);
+      document.querySelector("#ragSearchMore")?.addEventListener("click", () => doSearch(true));
     } catch (e) { show(`<div style="color:var(--error)">${esc(e.message)}</div>`); }
     finally { searchBtn.disabled = false; searchBtn.textContent = prev; }
   }
 
   askBtn.addEventListener("click", doAsk);
-  searchBtn.addEventListener("click", doSearch);
+  searchBtn.addEventListener("click", () => doSearch(false));
   question.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doAsk(); } });
 
   // Refresh stats + the cache picker when the Library tab is opened.
   document.querySelectorAll('.tab[data-tab="rag"]').forEach((t) =>
-    t.addEventListener("click", () => { loadStats(); loadStatus(); loadRagCache(); }));
+    t.addEventListener("click", () => { loadStats(); loadStatus(); loadRagCache(); loadFocusList(); }));
 
-  loadStats(); loadStatus(); loadRagCache();
+  loadStats(); loadStatus(); loadRagCache(); loadFocusList();
 })();
