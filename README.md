@@ -27,7 +27,8 @@ Check short demo @ "https://www.youtube.com/watch?v=23JRyHSQdCI"
 - **Agent skills** — turn selected context into a reusable, *evaluated* skill via a
   sub-agent pipeline (understand → analyze → author → eval → gate → refine). Authored by
   the latest Claude in-process or via the **Claude Code CLI as a subprocess**, scored by a
-  deterministic + rubric panel, and **gated behind human review** before it joins the library.
+  deterministic + rubric panel, and **gated behind human review** before it joins the
+  library — optionally as a durable **LangGraph** build that pauses at the gate and resumes later.
 - **MCP, both directions** — connect agents to external MCP servers (Supabase, GitHub, …)
   and run BYO-WIKI *as* an MCP server. Reads join the agent; **writes are deny-by-default**.
 
@@ -42,34 +43,135 @@ flowchart TB
     CLI["CLI · runner.py"]
   end
 
-  ING["Ingestion<br/>fetch · clean · contextual summaries<br/>chunk · entity / relation / topic extraction"]
-  IF --> ING
-  IF --> REASON
+  ING["Ingestion pipeline<br/>fetch · clean · contextual summaries<br/>chunk · embed · entity / relation / topic extraction"]
 
-  ING --> KG[("Knowledge graph<br/>layers 0–7")]
-  ING --> VEC[("HNSW index<br/>sections + chunks")]
-
-  subgraph REASON["Reasoning"]
-    RAG["Contextual RAG<br/>retrieve → re-rank / MMR"]
-    AGENT["Curating agent · deepagents<br/>canonicalize · topics · synthesize"]
-    SKILL["Agent-skill loop<br/>author → eval → gate → refine"]
+  subgraph STORE["Stores · local-first under data/"]
+    direction LR
+    KG[("Knowledge graph · layers 0–5<br/>source · section · chunk<br/>entity · topic · synthesis")]
+    VEC[("HNSW index<br/>section summaries + chunks")]
+    MEM[("Memory · layer 6")]
+    SKL[("Skill library · layer 7")]
   end
 
-  VEC --> RAG
-  KG  --> AGENT
-  RAG <--> MEM[("Memory · layer 6")]
-  AGENT --> KG
-  SKILL --> SKL[("Skill library · layer 7")]
-  SKILL --> KG
+  subgraph REASON["Reasoning"]
+    direction LR
+    RAG["Contextual RAG<br/>retrieve → re-rank / MMR → cite"]
+    AGENT["Curating agent · deepagents<br/>ingest · query · lint"]
+    SKILL["Agent-skill loop · LangGraph<br/>author → eval → gate → human review"]
+  end
 
-  REASON --> LLM["LLM providers<br/>Claude · OpenAI · Qwen · DeepSeek · Gemini · Mistral"]
-  AGENT  --> MCP["MCP servers<br/>Supabase · GitHub · fetch<br/>reads join agent · writes gated"]
-  SKILL  --> MCP
-  SKILL  --> OBS["Observability<br/>LangSmith · OTel · RAGAS"]
+  IF --> ING
+  IF --> REASON
+  ING --> KG
+  ING --> VEC
+
+  VEC --> RAG
+  RAG --> EMB["Embeddings · OpenAI"]
+  RAG <--> MEM
+  KG <--> AGENT
+  AGENT <--> MEM
+  AGENT <--> MCP["External MCP servers<br/>Supabase · GitHub · fetch<br/>reads join agent · writes gated"]
+  SKILL --> SKL
+  SKILL --> KG
+  SKILL --> MCP
+
+  REASON --> LLM["LLM providers<br/>Claude · OpenAI · Qwen<br/>DeepSeek · Gemini · Mistral"]
+
+  REASON -.->|offline metrics| EVAL["Evaluation<br/>hit@k · MRR · recall<br/>RAGAS · 5-family judge panel"]
+  REASON -.->|live run traces| OBS["Observability<br/>LangSmith · OpenTelemetry"]
 ```
 
 Everything above the stores is stateless; all state lives in `data/` (JSON graph,
-HNSW vectors, SQLite checkpoints), so the app is reproducible and local-first.
+HNSW vectors, SQLite checkpoints), so the app is reproducible and local-first. The JSON
+API can also be exposed *as* an MCP server (reads open, writes deny-by-default).
+
+**Evaluation and observability are different planes — don't conflate them.** *Evaluation*
+measures quality **offline**: deterministic retrieval metrics (hit@k · MRR · recall),
+**RAGAS** (faithfulness · answer-relevancy · context-precision, wrapped as LangSmith
+evaluators in `ragas_eval.py`), and a 5-family LLM-judge panel calibrated against human
+labels. *Observability* traces **live** runs — agent, RAG, and skill builds — to
+**LangSmith** and, optionally, **OpenTelemetry**. RAGAS is an evaluator, not a tracer.
+
+### How the curating agent works
+
+A [`deepagents`](https://pypi.org/project/deepagents/) agent drives four modes
+(`init · ingest · query · lint`) as a recursion-limited reason↔act loop over a local
+filesystem backend. Its tools read and write the knowledge graph, recall memory *before*
+an answer and write it back *after*, look up skills, and call external MCP **read** tools.
+`query` grounds cited answers through contextual RAG; `ingest`/`lint` canonicalize
+duplicates, nest topics, and write synthesis pages.
+
+```mermaid
+flowchart TB
+  subgraph DRIVE["Entry points · Web UI · /api · runner.py"]
+    direction LR
+    INIT["init<br/>scaffold"]
+    INGEST["ingest<br/>organize new material"]
+    QUERY["query<br/>cited answer"]
+    LINT["lint<br/>maintain library"]
+  end
+
+  DRIVE --> REASON
+
+  subgraph LOOP["deepagents · local filesystem backend"]
+    REASON["reason ↔ act loop<br/>(recursion-limited)"]
+    KGRW["KG tools<br/>search · upsert · merge<br/>relate · nest topics · synthesize"]
+    MEMT["Memory tools<br/>recall before · write after"]
+    SKT["Skill lookup"]
+    MCPR["MCP read tools"]
+    REASON <--> KGRW
+    REASON <--> MEMT
+    REASON <--> SKT
+    REASON <--> MCPR
+  end
+
+  KGRW <--> KG[("Knowledge graph<br/>layers 0–5")]
+  MEMT <--> MEM[("Memory · layer 6")]
+  QUERY -.->|grounds answers| RAG["Contextual RAG<br/>retrieve → re-rank / MMR"]
+  RAG --> VEC[("HNSW index")]
+  RAG --> KG
+```
+
+### Skill builds run as a durable LangGraph
+
+The skill loop has two interchangeable runtimes over the *same* phase functions: a linear
+in-process pipeline (`SKILL_BACKEND=pipeline`), or a LangGraph `StateGraph`
+(`skill_graph.py`) that adds conditional gating, a durable human-review `interrupt()`, and
+checkpointing (SQLite / Postgres / memory). Each phase is authored either in-process or by
+the **Claude Code CLI as a subprocess** (`generate_cc`). The gate never finalizes alone —
+it lands a draft in `pending_review`; only a human promotes it. Pause at the gate,
+checkpoint, and resume in another process by `thread_id`. Every build/eval/refine is traced
+to LangSmith (parent run + per-phase children) and, optionally, OpenTelemetry.
+
+```mermaid
+stateDiagram-v2
+  direction TB
+  [*] --> gather
+  gather --> understand: backend = pipeline
+  gather --> generate_cc: backend = claude_code
+  understand --> analyze
+  analyze --> codeact
+  codeact --> evaluate
+  generate_cc --> evaluate
+  evaluate --> human_review: pass gate, pending_review
+  evaluate --> [*]: reject
+  human_review --> finalize: accept
+  human_review --> prepare_revision: revise + notes
+  human_review --> [*]: reject
+  prepare_revision --> codeact: pipeline
+  prepare_revision --> generate_cc: claude_code
+  finalize --> [*]
+
+  note right of evaluate
+    deterministic checks (11)
+    + 5-family rubric panel
+  end note
+  note right of human_review
+    interrupt() pauses + checkpoints
+    (SQLite / Postgres / memory)
+    resume by thread_id, survives restart
+  end note
+```
 
 ## Quick start
 
