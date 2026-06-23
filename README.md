@@ -148,6 +148,30 @@ mcp-list · mcp-ingest · mcp-call · mcp-serve      # MCP client + serve-as-ser
 
 Common flags: `--provider`, `--model`, `--rerank/--no-rerank`, `--mmr`, `--no-agent`.
 
+## Screenshots
+
+The web UI in action — one image per tab.
+
+**Read** — search / fetch + extract / summarize / save-to-KG.
+
+![Read tab — fetch, extract and cache a page](docs/screenshots/ingest_to_store.png)
+
+**Cache** — reuse extracted content across the KG, Q&A and Memory without re-fetching.
+
+![Cache tab — cached content reused across the app](docs/screenshots/cache.png)
+
+**Knowledge Graph** — ingest, browse the layer-colored graph, Integrate / Ask / Maintain.
+
+![Knowledge Graph tab — layered, color-coded concept map](docs/screenshots/knowledge_graph.png)
+
+**Memory** — cross-session store recalled before every answer and written back after.
+
+![Memory tab — cross-session memory store](docs/screenshots/memory.png)
+
+**Agent Skills** — build, watch the eval/gate report, accept/revise/reject.
+
+![Agent Skills tab — build, evaluate and gate skills](docs/screenshots/agent_skills.png)
+
 ## Connecting tools (MCP)
 
 Agents can call external MCP servers, and BYO-WIKI can run as one — both opt-in and
