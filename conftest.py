@@ -26,3 +26,14 @@ import tempfile
 _TEST_DATA_DIR = tempfile.mkdtemp(prefix="byowiki_tests_")
 os.environ["KG_DATA_DIR"] = _TEST_DATA_DIR
 os.environ["BYOWIKI_TEST_DATA_DIR"] = _TEST_DATA_DIR
+
+# Force LOCAL storage backends for the whole test session and blank any cloud DB
+# URLs. Importing app.py runs config.load_env(), which would otherwise load the
+# developer's real .env (CACHED_STORE_BACKEND/MEMORY_BACKEND=supabase + a live
+# SUPABASE_DB_URL) into the test process — and with psycopg installed, tests
+# would read/clear/write the production Supabase database. config.load_env uses
+# override=False, so setting these here (before any import) makes it skip them.
+os.environ["CACHED_STORE_BACKEND"] = "local"
+os.environ["MEMORY_BACKEND"] = "local"
+for _v in ("SUPABASE_DB_URL", "CACHED_STORE_DB_URL", "MEMORY_DB_URL"):
+    os.environ[_v] = ""

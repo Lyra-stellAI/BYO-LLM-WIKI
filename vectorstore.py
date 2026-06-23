@@ -15,11 +15,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import numpy as np
 
 _BASE = Path(os.environ.get("KG_DATA_DIR", "data")) / "vectors"
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _tokenize(text: str) -> list[str]:
+    return _TOKEN_RE.findall((text or "").lower())
 
 
 def _try_hnsw():
@@ -28,6 +35,53 @@ def _try_hnsw():
         return hnswlib
     except Exception:  # noqa: BLE001
         return None
+
+
+class _BM25Index:
+    """Okapi BM25 over chunk texts — a lexical/sparse complement to the dense
+    HNSW index. Catches exact terms, identifiers, acronyms, and rare tokens that
+    embeddings blur. Pure numpy, no extra dependency."""
+
+    def __init__(self, docs_tokens: list[list[str]], k1: float = 1.5, b: float = 0.75):
+        self.k1, self.b = k1, b
+        self.n = len(docs_tokens)
+        self.doc_len = np.array([len(t) for t in docs_tokens], dtype=np.float32)
+        self.avgdl = float(self.doc_len.mean()) if self.n else 0.0
+        self.tf: list[dict[str, int]] = []
+        df: dict[str, int] = {}
+        for toks in docs_tokens:
+            counts: dict[str, int] = {}
+            for t in toks:
+                counts[t] = counts.get(t, 0) + 1
+            self.tf.append(counts)
+            for t in counts:
+                df[t] = df.get(t, 0) + 1
+        self.idf = {t: max(0.0, float(np.log((self.n - d + 0.5) / (d + 0.5) + 1.0)))
+                    for t, d in df.items()}
+
+    def top(self, query_text: str, m: int) -> tuple[np.ndarray, np.ndarray]:
+        """Return (chunk indices, scores) for the top-m BM25 matches (zero-score
+        docs — no query term present — are dropped)."""
+        if self.n == 0:
+            return np.array([], dtype=int), np.array([], dtype=float)
+        q = [t for t in set(_tokenize(query_text)) if t in self.idf]
+        if not q:
+            return np.array([], dtype=int), np.array([], dtype=float)
+        scores = np.zeros(self.n, dtype=np.float32)
+        for i in range(self.n):
+            counts, dl = self.tf[i], self.doc_len[i]
+            norm = self.k1 * (1.0 - self.b + self.b * dl / (self.avgdl or 1.0))
+            s = 0.0
+            for term in q:
+                tf = counts.get(term, 0)
+                if tf:
+                    s += self.idf[term] * (tf * (self.k1 + 1.0)) / (tf + norm)
+            scores[i] = s
+        m = min(m, self.n)
+        idx = np.argpartition(-scores, m - 1)[:m]
+        idx = idx[np.argsort(-scores[idx])]
+        keep = [int(i) for i in idx if scores[i] > 0.0]
+        return np.array(keep, dtype=int), scores
 
 
 class _ChunkIndex:
@@ -69,6 +123,7 @@ class VectorStore:
         self.chunk_emb = np.zeros((0, 0), dtype=np.float32)
         self.section_emb = np.zeros((0, 0), dtype=np.float32)
         self._index: _ChunkIndex | None = None
+        self._bm25: _BM25Index | None = None
 
     # --- persistence --------------------------------------------------------
     def persist(self) -> None:
@@ -109,6 +164,7 @@ class VectorStore:
             self.sections.extend(section_records)
             self.section_emb = _vstack(self.section_emb, np.asarray(section_embeddings, dtype=np.float32))
         self._index = None  # invalidate
+        self._bm25 = None
 
     def remove_doc(self, url: str) -> int:
         """Drop all chunks/sections for a document URL (for re-ingest)."""
@@ -121,6 +177,7 @@ class VectorStore:
             self.sections = [self.sections[i] for i in keep_s]
             self.section_emb = self.section_emb[keep_s] if self.section_emb.size else self.section_emb
             self._index = None
+            self._bm25 = None
         return removed
 
     def doc_urls(self) -> set:
@@ -217,6 +274,90 @@ class VectorStore:
             rec = dict(rec); rec["mmr_score"] = round(best_score, 4)
             out.append(rec); chosen_js.append(j); chosen_urls.add(rec.get("url"))
             remaining.pop(best_pos)
+        return out
+
+    # --- hybrid (dense + BM25) ----------------------------------------------
+    def _ensure_bm25(self) -> _BM25Index:
+        if self._bm25 is None:
+            self._bm25 = _BM25Index([_tokenize(c.get("text", "")) for c in self.chunks])
+        return self._bm25
+
+    def _chunk_result(self, j: int, sim: float = 0.0, sec_sim: float = 0.0) -> dict:
+        """Build a hit dict for chunk index j (used for BM25-only candidates)."""
+        rec = self.chunks[j]
+        return {
+            "id": rec["id"], "url": rec.get("url"), "title": rec.get("title"),
+            "date": rec.get("date"), "section_id": rec.get("section_id"),
+            "section_title": rec.get("section_title"),
+            "contextual_summary": rec.get("contextual_summary"),
+            "text": rec.get("text"), "preview": rec.get("preview"),
+            "chunk_score": round(float(sim), 4), "section_score": round(float(sec_sim), 4),
+            "score": round(float(sim), 4),
+        }
+
+    def search_hybrid(self, query_vec: np.ndarray, query_text: str, k: int = 8, *,
+                      n_sections: int = 5, section_weight: float = 0.35,
+                      rrf_k: int = 60, cand: int | None = None) -> list[dict]:
+        """Dense (hierarchical) + BM25 retrieval fused with Reciprocal Rank
+        Fusion. RRF needs no score calibration between the two rankers — it
+        combines by rank position, so a chunk that ranks well in *either* signal
+        surfaces. Falls back to dense-only when BM25 has no matches."""
+        if not self.chunks:
+            return []
+        cand = cand or max(k * 6, 30)
+        dense = self.search(query_vec, k=cand, n_sections=n_sections,
+                            section_weight=section_weight)
+        bm25_idx, _ = self._ensure_bm25().top(query_text, cand)
+        if len(bm25_idx) == 0:
+            return dense[:k]
+        by_id = {h["id"]: h for h in dense}
+        dense_ids = [h["id"] for h in dense]
+        bm25_ids = []
+        for j in bm25_idx:
+            cid = self.chunks[j]["id"]
+            bm25_ids.append(cid)
+            if cid not in by_id:
+                by_id[cid] = self._chunk_result(int(j))
+        fused: dict[str, float] = {}
+        for rank, cid in enumerate(dense_ids):
+            fused[cid] = fused.get(cid, 0.0) + 1.0 / (rrf_k + rank + 1)
+        for rank, cid in enumerate(bm25_ids):
+            fused[cid] = fused.get(cid, 0.0) + 1.0 / (rrf_k + rank + 1)
+        ranked = sorted(fused, key=lambda c: -fused[c])[:k]
+        out = []
+        for cid in ranked:
+            h = dict(by_id[cid])
+            h["rrf_score"] = round(fused[cid], 5)
+            out.append(h)
+        return out
+
+    # --- section-level (for the coarse-retrieve -> ICL regime) --------------
+    def section_full_text(self, section_id: str) -> str:
+        """Reconstruct a section's full text from its chunks, in order."""
+        chunks = [c for c in self.chunks if c.get("section_id") == section_id]
+        chunks.sort(key=lambda c: c.get("position", 0))
+        return "\n".join(c.get("text", "") for c in chunks).strip()
+
+    def rank_sections(self, query_vec: np.ndarray, *, restrict_urls: set | None = None,
+                      limit: int = 50) -> list[dict]:
+        """Rank sections by query↔section-summary similarity (optionally limited
+        to a set of document URLs). Returns section dicts with a ``score`` — the
+        coarse step of coarse-retrieve-then-ICL."""
+        if not self.sections or not self.section_emb.size:
+            return []
+        q = np.asarray(query_vec, dtype=np.float32)
+        sims = self.section_emb @ q
+        order = np.argsort(-sims)
+        out = []
+        for i in order:
+            s = self.sections[int(i)]
+            if restrict_urls is not None and s.get("url") not in restrict_urls:
+                continue
+            row = dict(s)
+            row["score"] = round(float(sims[int(i)]), 4)
+            out.append(row)
+            if len(out) >= limit:
+                break
         return out
 
 

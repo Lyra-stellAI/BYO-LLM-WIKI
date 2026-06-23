@@ -284,7 +284,20 @@
             </select>
           </div>
           <div id="kgLegend" class="kg-legend"></div>
-          <div id="kgGraph" class="kg-graph"></div>
+          <div class="kg-graph-wrap">
+            <div id="kgGraph" class="kg-graph"></div>
+            <div id="kgControls" class="kg-controls" aria-label="Graph view controls">
+              <button class="kg-ctl kg-ctl-zin" data-kg-view="zoomin" title="Zoom in" aria-label="Zoom in">+</button>
+              <button class="kg-ctl kg-ctl-zout" data-kg-view="zoomout" title="Zoom out" aria-label="Zoom out">−</button>
+              <div class="kg-dpad">
+                <button class="kg-ctl kg-ctl-up" data-kg-view="up" title="Pan up" aria-label="Pan up">▲</button>
+                <button class="kg-ctl kg-ctl-left" data-kg-view="left" title="Pan left" aria-label="Pan left">◀</button>
+                <button class="kg-ctl kg-ctl-fit" data-kg-view="fit" title="Fit graph to view" aria-label="Fit to view">⤢</button>
+                <button class="kg-ctl kg-ctl-right" data-kg-view="right" title="Pan right" aria-label="Pan right">▶</button>
+                <button class="kg-ctl kg-ctl-down" data-kg-view="down" title="Pan down" aria-label="Pan down">▼</button>
+              </div>
+            </div>
+          </div>
           <div id="kgDetail" class="kg-detail empty">
             Click a node in the graph or a chunk in the sidebar to see details.
           </div>
@@ -346,6 +359,18 @@
           <button id="ragAskBtn" class="btn btn-accent">Ask</button>
           <button id="ragSearchBtn" class="btn btn-secondary" title="Show retrieved passages only (no LLM)">Search</button>
         </div>
+        <details class="rag-focus">
+          <summary>Focus (optional) — answer from <em>specific</em> documents</summary>
+          <p class="hint" style="margin-top:6px">
+            Leave empty to search your whole library. Select one or more documents
+            to answer from just those.
+          </p>
+          <div class="cache-picker-head">
+            <label class="rag-toggle"><input type="checkbox" id="ragFocusAll" /> select all</label>
+            <button id="ragFocusRefresh" class="btn btn-secondary btn-sm" type="button">Refresh</button>
+          </div>
+          <div id="ragFocusList" class="cache-picker-list"></div>
+        </details>
         <div id="ragAnswer" class="ask-answer hidden"></div>
       </div>
     </section>

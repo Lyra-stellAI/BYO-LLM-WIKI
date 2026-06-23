@@ -108,10 +108,57 @@ def _parse_pdf(content: bytes) -> str:
     return "\n\n".join(parts)
 
 
+# Boilerplate stripping shared by every HTML extractor (this module, pipeline,
+# app). Tag names alone are not enough: scholarly pages (arXiv especially) put
+# citation/export widgets and "labs" rails INSIDE the body — e.g. <div
+# class="extra-services">, labstabs, the BibTeX modal — so they survive a
+# tag-only strip and pollute the KG with "Bibliographic Explorer / BibTeX
+# citation / Loading…" chunks. We also remove by ARIA role and by chrome-y
+# id/class substrings.
+_STRIP_TAGS = ("script", "style", "noscript", "iframe", "svg", "header", "footer",
+               "nav", "aside", "form", "button", "dialog", "template", "input",
+               "select", "label")
+_STRIP_ROLES = ("navigation", "banner", "complementary", "contentinfo", "search",
+                "dialog", "menu", "menubar", "tablist", "alert")
+# id/class substrings that mark site chrome or citation/export widgets. Kept
+# high-confidence to avoid stripping real content (no bare "cite"/"tool").
+_STRIP_PATTERNS = ("extra-services", "labstabs", "bibliograph", "bibtex", "endorse",
+                   "citation", "bookmark", "sidebar", "navbar", "cookie", "consent",
+                   "newsletter", "subscribe", "breadcrumb", "social", "share-",
+                   "-share", "related", "recommend", "skip-link", "sr-only",
+                   "screen-reader", "site-header", "site-footer", "promo", "advert",
+                   "popup")
+
+
+def _strip_boilerplate(soup):
+    for tag in soup(list(_STRIP_TAGS)):
+        if not tag.decomposed:
+            tag.decompose()
+    selectors = [f'[role="{r}" i]' for r in _STRIP_ROLES]
+    selectors.append('[aria-hidden="true"]')
+    for pat in _STRIP_PATTERNS:
+        selectors.append(f'[class*="{pat}" i]')
+        selectors.append(f'[id*="{pat}" i]')
+    for sel in selectors:
+        try:
+            for el in soup.select(sel):
+                if not el.decomposed:
+                    el.decompose()
+        except Exception:  # noqa: BLE001  (malformed selector / parser quirk)
+            continue
+    return soup
+
+
+def main_text(soup) -> str:
+    """Strip site chrome + citation widgets from a parsed page, then return the
+    main content text. Shared by ingestion, pipeline, and app so every ingest
+    path gets the same clean extraction."""
+    _strip_boilerplate(soup)
+    main = (soup.find("article") or soup.find("main")
+            or soup.find(attrs={"role": "main"}) or soup.body or soup)
+    return main.get_text(separator="\n", strip=True)
+
+
 def _parse_html(content: bytes) -> str:
     from bs4 import BeautifulSoup
-    soup = BeautifulSoup(content, "lxml")
-    for tag in soup(["script", "style", "noscript", "iframe", "svg", "header", "footer", "nav", "aside", "form"]):
-        tag.decompose()
-    main = soup.find("article") or soup.find("main") or soup.body or soup
-    return main.get_text(separator="\n", strip=True)
+    return main_text(BeautifulSoup(content, "lxml"))

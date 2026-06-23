@@ -218,6 +218,31 @@ async function doExtractAll() {
   }
 }
 
+function updateSearchPickCount() {
+  const n = resultsEl.querySelectorAll(".search-pick:checked").length;
+  const b = document.getElementById("extractSelectedBtn");
+  if (b) { b.disabled = n === 0; b.textContent = `Extract & cache selected (${n})`; }
+}
+
+// Extract the checked search results and cache them in one action — no copy/paste.
+async function extractSelectedSearch(btn) {
+  const urls = [...resultsEl.querySelectorAll(".search-pick:checked")].map((c) => c.value);
+  if (!urls.length) return;
+  setBusy(true);
+  setStatus(`<span class="spinner"></span>Extracting ${urls.length} result(s)…`);
+  try {
+    const data = await postJSON("/api/cache/extract", { urls });
+    renderExtractResults(data);            // shows the extracted cards + sets extractItems
+    const allBtn = document.getElementById("ingestAllBtn");
+    if (allBtn) await ingestAllNew(allBtn); // then cache the new ones automatically
+    else setStatus("All selected results were already cached.", "info");
+  } catch (e) {
+    setStatus(escapeHTML(e.message), "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
 function renderSearchResults(data) {
   if (data.kind === "link" && data.results && data.results.length) {
     renderLinkContext(data.results[0]);
@@ -227,22 +252,34 @@ function renderSearchResults(data) {
     resultsEl.innerHTML = `<div class="status">No results found for "${escapeHTML(data.query)}".</div>`;
     return;
   }
+  const toolbar = `<div class="search-toolbar">
+    <label class="search-pick-all"><input type="checkbox" id="searchPickAll" /> Select all</label>
+    <button class="btn btn-primary btn-sm" id="extractSelectedBtn" disabled>Extract & cache selected (0)</button>
+  </div>`;
   const cards = data.results.map((r) => `
-    <article class="result-card">
-      <h3><a href="${escapeHTML(r.url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(r.title || r.url)}</a></h3>
-      <div class="url">${escapeHTML(r.url)}</div>
-      <p class="snippet">${escapeHTML(r.snippet || "")}</p>
-      <button class="btn btn-secondary" data-summarize="${escapeHTML(r.url)}" style="margin-top:10px; padding:8px 14px; font-size:0.85rem;">Summarize this</button>
+    <article class="result-card pickable">
+      <input type="checkbox" class="search-pick" value="${escapeHTML(r.url)}" aria-label="Select this result" />
+      <div class="result-card-body">
+        <h3><a href="${escapeHTML(r.url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(r.title || r.url)}</a></h3>
+        <div class="url">${escapeHTML(r.url)}</div>
+        <p class="snippet">${escapeHTML(r.snippet || "")}</p>
+        <button class="btn btn-secondary btn-sm" data-summarize="${escapeHTML(r.url)}">Summarize this</button>
+      </div>
     </article>
   `).join("");
-  resultsEl.innerHTML = cards;
+  resultsEl.innerHTML = toolbar + cards;
 
   resultsEl.querySelectorAll("[data-summarize]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      queryEl.value = btn.dataset.summarize;
-      doSummarize();
-    });
+    btn.addEventListener("click", () => { queryEl.value = btn.dataset.summarize; doSummarize(); });
   });
+  resultsEl.querySelectorAll(".search-pick").forEach((c) =>
+    c.addEventListener("change", updateSearchPickCount));
+  document.getElementById("searchPickAll")?.addEventListener("change", (e) => {
+    resultsEl.querySelectorAll(".search-pick").forEach((c) => { c.checked = e.target.checked; });
+    updateSearchPickCount();
+  });
+  document.getElementById("extractSelectedBtn")?.addEventListener("click", (e) =>
+    extractSelectedSearch(e.currentTarget));
 }
 
 function renderSummary(data) {
