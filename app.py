@@ -55,6 +55,22 @@ except ImportError:  # tracing is optional
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
+
+@app.context_processor
+def _inject_asset_version():
+    """Expose ``asset_v(filename)`` to templates — the static file's mtime, used
+    as a ?v= cache-buster so browsers fetch fresh JS/CSS after an update instead
+    of serving a stale cached copy (which would hide new UI)."""
+    static_dir = os.path.join(app.root_path, "static")
+
+    def asset_v(filename: str) -> str:
+        try:
+            return str(int(os.path.getmtime(os.path.join(static_dir, filename))))
+        except OSError:
+            return ""
+
+    return {"asset_v": asset_v}
+
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"

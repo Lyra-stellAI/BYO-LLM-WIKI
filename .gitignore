@@ -4,6 +4,11 @@ __pycache__/
 .venv/
 venv/
 env/
+
+# Skills / Claude Code tooling state (machine-local, not project source)
+.claude/
+.agents/
+skills-lock.json
 .env
 .env.local
 .env.*.bak
