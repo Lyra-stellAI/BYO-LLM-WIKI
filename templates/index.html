@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v=asset_v('styles.css')) }}" />
 </head>
 <body>
   <div class="topbar">
@@ -587,11 +587,11 @@
   </div>
 
   <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
-  <script src="{{ url_for('static', filename='kg.js') }}"></script>
-  <script src="{{ url_for('static', filename='rag.js') }}"></script>
-  <script src="{{ url_for('static', filename='cache.js') }}"></script>
-  <script src="{{ url_for('static', filename='memory.js') }}"></script>
-  <script src="{{ url_for('static', filename='skill.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js', v=asset_v('app.js')) }}"></script>
+  <script src="{{ url_for('static', filename='kg.js', v=asset_v('kg.js')) }}"></script>
+  <script src="{{ url_for('static', filename='rag.js', v=asset_v('rag.js')) }}"></script>
+  <script src="{{ url_for('static', filename='cache.js', v=asset_v('cache.js')) }}"></script>
+  <script src="{{ url_for('static', filename='memory.js', v=asset_v('memory.js')) }}"></script>
+  <script src="{{ url_for('static', filename='skill.js', v=asset_v('skill.js')) }}"></script>
 </body>
 </html>
