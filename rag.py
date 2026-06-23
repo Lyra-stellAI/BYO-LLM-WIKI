@@ -272,48 +272,72 @@ def _answer_icl_sections(question: str, focus: list[dict], rp: str, rm: str,
     """Regime 2: the focus is too big to stuff whole — coarse-retrieve the most
     relevant SECTIONS within the focus docs, reconstruct each section's full
     text, fill the budget best-first, and ICL those sections."""
+    import cached_store
     vs = VectorStore.load(vs_name)
-    focus_urls = {(it.get("source_url") or f"cache:{it['id']}") for it in focus}
-    ranked = vs.rank_sections(emb.embed_query(question, model=vs.embed_model),
-                              restrict_urls=focus_urls) if vs.sections else []
-    blocks, used = [], 0
-    for s in ranked:
-        txt = vs.section_full_text(s["id"])
-        if not txt:
-            continue
-        t = _est_tokens(txt)
-        if blocks and used + t > ICL_BUDGET_TOKENS:
-            break
-        blocks.append({"title": s.get("title") or s.get("url"),
-                       "url": s.get("url"),
-                       "section": s.get("section_title") or s.get("name"),
-                       "text": txt})
-        used += t
-        if used >= ICL_BUDGET_TOKENS:
-            break
 
+    # Only FRESH-vectorized docs can be served from the vector index. A doc that
+    # was re-ingested after vectorizing has stale chunks in the store (vectorized
+    # is True but vector_projected_hash != content_hash), so serving its sections
+    # would cite the OLD content. Those — and never-vectorized docs — fall back to
+    # their current raw_text instead.
+    fresh_urls, stale_docs = set(), []
+    for it in focus:
+        if it.get("vectorized") and not cached_store.vector_stale(it):
+            fresh_urls.add(cached_store.projection_url(it))
+        else:
+            stale_docs.append(it)
+
+    blocks, used = [], 0
+
+    def _add(title, url, text, section=None):
+        nonlocal used
+        t = _est_tokens(text)
+        if blocks and used + t > ICL_BUDGET_TOKENS:
+            return False
+        blocks.append({"title": title, "url": url, "section": section, "text": text})
+        used += t
+        return used < ICL_BUDGET_TOKENS
+
+    # 1) Fresh docs: coarse-retrieve the most relevant sections (current content).
+    if fresh_urls and vs.sections:
+        ranked = vs.rank_sections(emb.embed_query(question, model=vs.embed_model),
+                                  restrict_urls=fresh_urls)
+        for s in ranked:
+            txt = vs.section_full_text(s["id"])
+            if txt and not _add(s.get("title") or s.get("url"), s.get("url"), txt,
+                                s.get("section_title") or s.get("name")):
+                break
+
+    # 2) Stale / unvectorized docs: use CURRENT raw_text (truncated to remaining
+    #    budget) — never the stale vector chunks.
+    for it in stale_docs:
+        room = ICL_BUDGET_TOKENS - used
+        if room <= 0:
+            break
+        snippet = (it.get("raw_text") or "")[: room * 4]
+        if snippet:
+            _add(it.get("source_title") or cached_store.projection_url(it),
+                 cached_store.projection_url(it), snippet)
+
+    # Safety net: if neither path produced context (e.g. fresh doc with no
+    # sections), fall back to current raw_text across the focus.
     if not blocks:
-        # Focus docs aren't vectorized (no sections) — degrade to full-doc ICL
-        # truncated to the budget, in selection order.
         for it in focus:
-            raw = it.get("raw_text") or ""
             room = ICL_BUDGET_TOKENS - used
             if room <= 0:
                 break
-            snippet = raw[: room * 4]
-            blocks.append({"title": it.get("source_title") or it["id"],
-                           "url": it.get("source_url") or f"cache:{it['id']}",
-                           "text": snippet})
-            used += _est_tokens(snippet)
-        text = _icl_generate(question, blocks, rp, rm, memory_section)
-        return text, _icl_citations(blocks), {
-            "mode": "icl-truncated", "documents": len(blocks), "tokens": used,
-            "note": "focus not vectorized; truncated to budget"}
+            snippet = (it.get("raw_text") or "")[: room * 4]
+            if snippet:
+                _add(it.get("source_title") or cached_store.projection_url(it),
+                     cached_store.projection_url(it), snippet)
 
     text = _icl_generate(question, blocks, rp, rm, memory_section)
     scope = {"mode": "icl-sections", "sections": len(blocks),
-             "documents": len({b["url"] for b in blocks}),
-             "available_sections": len(ranked), "tokens": used}
+             "documents": len({b["url"] for b in blocks}), "tokens": used}
+    if stale_docs:
+        scope["stale_fallback"] = len(stale_docs)
+        scope["note"] = (f"{len(stale_docs)} focus document(s) changed since last "
+                         "vectorize; used current text — re-vectorize for section retrieval.")
     return text, _icl_citations(blocks), scope
 
 

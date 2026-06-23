@@ -133,6 +133,10 @@ def test_regime_large_focus_coarse_retrieves_sections():
     vs.persist()
     item = cached_store.ingest(kind="url", source_url=url, source_title="SecDoc",
                                raw_text="x" * 400)   # ~100 est-tokens
+    # Mark FRESH-vectorized (projected hash matches current content) so the
+    # section path trusts the vector index.
+    cached_store.get_store().set_flags(item["id"], vectorized=True,
+                                       vector_projected_hash=item["content_hash"])
     captured = {}
     saved_eq = rag.emb.embed_query
     rag.emb.embed_query = lambda text, model=None: np.array([1, 0, 0, 0], dtype=np.float32)
@@ -147,6 +151,45 @@ def test_regime_large_focus_coarse_retrieves_sections():
         assert res["regime"] == "icl-sections", res["regime"]
         # top-ranked section (sa) reconstructed to FULL text, fed to ICL
         assert any("section A body one" in b["text"] for b in captured["blocks"])
+    finally:
+        restore()
+        rag.emb.embed_query = saved_eq
+
+
+def test_regime_stale_vectorized_focus_falls_back_to_raw_text():
+    """A doc re-ingested after vectorizing (vectorized but content changed) must
+    NOT be served from its stale vector chunks — the section path falls back to
+    its current raw_text so focused answers never cite outdated content."""
+    url = "https://ex.com/stale"
+    vs = VectorStore(name="ragret_stale")
+    vs.add(
+        chunk_records=[{"id": "z0", "url": url, "title": "Doc", "section_id": "zs",
+                        "position": 0, "text": "OLD STALE SECTION CONTENT"}],
+        chunk_embeddings=np.eye(1, 4, dtype=np.float32),
+        section_records=[{"id": "zs", "url": url, "title": "Doc", "section_title": "Z", "summary": "old"}],
+        section_embeddings=np.array([[1, 0, 0, 0]], dtype=np.float32),
+    )
+    vs.persist()
+    item = cached_store.ingest(kind="url", source_url=url, source_title="Doc",
+                               raw_text="NEW CURRENT CONTENT " + "x" * 400)
+    # vectorized, but against an OLD hash -> vector_stale is True
+    cached_store.get_store().set_flags(item["id"], vectorized=True,
+                                       vector_projected_hash="OLDHASH_does_not_match")
+    captured = {}
+    saved_eq = rag.emb.embed_query
+    rag.emb.embed_query = lambda text, model=None: np.array([1, 0, 0, 0], dtype=np.float32)
+    restore = _patch(
+        resolve_provider_model=lambda p, m: ("anthropic", "claude-test"),
+        ICL_BUDGET_TOKENS=10,
+        _icl_generate=lambda q, blocks, rp, rm, mem="": captured.update(blocks=blocks) or "ICL [1]",
+    )
+    try:
+        res = rag.answer("q?", focus_ids=[item["id"]], vs_name="ragret_stale",
+                         use_memory=False, write_back=False)
+        body = " ".join(b["text"] for b in captured["blocks"])
+        assert "NEW CURRENT CONTENT" in body              # current raw_text used
+        assert "OLD STALE SECTION CONTENT" not in body    # stale vector chunk NOT used
+        assert res["scope"].get("stale_fallback") == 1
     finally:
         restore()
         rag.emb.embed_query = saved_eq
