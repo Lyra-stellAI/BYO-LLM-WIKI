@@ -256,6 +256,7 @@ The web UI in action — one image per tab.
 **Read** — search / fetch + extract / summarize / save-to-KG.
 
 ![Read tab — fetch, extract and cache a page](docs/screenshots/ingest_to_store.png)
+<img width="1397" height="5021" alt="read-search" src="https://github.com/user-attachments/assets/de5c3725-83fb-46e1-9a7c-cdf4804d3155" />
 
 **Cache** — reuse extracted content across the KG, Q&A and Memory without re-fetching.
 
