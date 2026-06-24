@@ -82,28 +82,43 @@ def ensure_tracing_project() -> str | None:
     return os.environ.get("LANGSMITH_PROJECT")
 
 
+def _demo_meter(client, family: str):
+    """In DEMO_MODE, wrap a raw SDK client with the spend meter (outermost) so
+    every create() is budget-checked + recorded. No-op otherwise. This single
+    hook covers every raw-SDK path that flows through traced_* (summaries, KG
+    extraction, ICL answers, and embeddings)."""
+    try:
+        import demo_budget
+        if demo_budget.demo_enabled():
+            return demo_budget.meter_client(client, family)
+    except Exception:  # noqa: BLE001
+        pass
+    return client
+
+
 def traced_openai(client):
     """Wrap an OpenAI(-compatible) SDK client so its calls trace to LangSmith
-    (latency, token usage -> cost, errors). No-op passthrough when tracing is
-    off or the wrapper is unavailable — best-effort, never breaks a call."""
-    if not tracing_enabled():
-        return client
-    try:
-        from langsmith.wrappers import wrap_openai
-        return wrap_openai(client)
-    except Exception:  # noqa: BLE001
-        return client
+    (latency, token usage -> cost, errors) and, in DEMO_MODE, are budget-metered.
+    Best-effort, never breaks a call."""
+    if tracing_enabled():
+        try:
+            from langsmith.wrappers import wrap_openai
+            client = wrap_openai(client)
+        except Exception:  # noqa: BLE001
+            pass
+    return _demo_meter(client, "openai")
 
 
 def traced_anthropic(client):
-    """LangSmith-tracing wrapper for an Anthropic SDK client (see traced_openai)."""
-    if not tracing_enabled():
-        return client
-    try:
-        from langsmith.wrappers import wrap_anthropic
-        return wrap_anthropic(client)
-    except Exception:  # noqa: BLE001
-        return client
+    """LangSmith-tracing + DEMO_MODE budget metering for an Anthropic SDK client
+    (see traced_openai)."""
+    if tracing_enabled():
+        try:
+            from langsmith.wrappers import wrap_anthropic
+            client = wrap_anthropic(client)
+        except Exception:  # noqa: BLE001
+            pass
+    return _demo_meter(client, "anthropic")
 
 
 def tracing_status() -> dict:

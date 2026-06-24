@@ -85,7 +85,14 @@ def first_available_provider() -> str | None:
 
 
 def resolve_provider_model(provider: str | None, model: str | None) -> tuple[str | None, str]:
-    """Resolve a (provider, model) pair, honoring 'auto' and provider defaults."""
+    """Resolve a (provider, model) pair, honoring 'auto' and provider defaults.
+
+    In DEMO_MODE this IGNORES the caller's provider/model and returns the pinned
+    cheap general model — the single chokepoint that forces every route's
+    summaries / Q&A / KG onto the demo model."""
+    import demo_budget
+    if demo_budget.demo_enabled():
+        return demo_budget.general_model()
     provider = (provider or "auto").strip().lower()
     if provider in ("auto", "", "extractive"):
         provider = first_available_provider() or ""
@@ -107,7 +114,13 @@ def skill_generator(provider: str | None = "auto", model: str | None = None) -> 
 
     An explicit, non-auto provider/model is honored as-is. Otherwise, prefer
     Anthropic's latest Claude (``SKILL_GENERATOR_MODEL``) when ``ANTHROPIC_API_KEY``
-    is set, else fall back to the usual auto resolution."""
+    is set, else fall back to the usual auto resolution.
+
+    In DEMO_MODE this is pinned to the cheap Qwen coder model (the priciest
+    feature, so it gets the dedicated code pin rather than Opus)."""
+    import demo_budget
+    if demo_budget.demo_enabled():
+        return demo_budget.code_model()
     p = (provider or "auto").strip().lower()
     if p not in ("auto", "", "extractive"):
         return resolve_provider_model(provider, model)
@@ -138,7 +151,13 @@ def resolve_judge(gen_provider: str, gen_model: str, judge_provider: str | None 
 
     Prefers an explicit judge, else a different-family configured provider, else
     falls back to the generator (cross_family=False) when nothing else is set.
-    """
+
+    In DEMO_MODE, judging collapses to the single pinned model (eval routes are
+    disabled for visitors anyway; this is defense in depth)."""
+    import demo_budget
+    if demo_budget.demo_enabled():
+        p, m = demo_budget.general_model()
+        return p, m, False
     if judge_provider:
         jp, jm = resolve_provider_model(judge_provider, judge_model)
         if jp:
@@ -165,7 +184,11 @@ def judge_panel(gen_provider: str | None, *, max_judges: int = 6) -> list[tuple[
     A diverse cross-family panel averages out any single model's idiosyncratic
     strictness/bias. Only configured providers (API key set) are included, so
     Gemini/Mistral join automatically once their keys are present.
-    """
+
+    In DEMO_MODE the panel is empty (no expensive cross-family fan-out)."""
+    import demo_budget
+    if demo_budget.demo_enabled():
+        return []
     gen_provider = (gen_provider or "").lower()
     panel, seen = [], set()
     for p, m in JUDGE_PANEL_CANDIDATES:
@@ -195,6 +218,19 @@ def build_chat_model(provider: str, model: str, *, temperature: float = 0.0,
             f"{cfg['env_key']} is not set. Export it to use the {cfg['label']} agent."
         )
 
+    # DEMO_MODE: this is the LangChain chokepoint (rerank, RAG answers, ingestion,
+    # skill phases). The raw-SDK proxy in config.traced_* does NOT cover these, so
+    # we budget-check up front, clamp tokens, disable retries, and attach a
+    # usage-recording callback so every .invoke() is metered. check_budget()
+    # raises BudgetExceededError (propagates) when the budget is exhausted.
+    demo_cb, demo_retries = None, None
+    import demo_budget
+    if demo_budget.demo_enabled():
+        demo_budget.check_budget()
+        max_tokens = min(max_tokens, demo_budget.max_tokens_cap())
+        demo_cb = demo_budget.langchain_callback()
+        demo_retries = 0
+
     if cfg.get("openai_compatible"):
         try:
             from langchain_openai import ChatOpenAI
@@ -205,7 +241,9 @@ def build_chat_model(provider: str, model: str, *, temperature: float = 0.0,
             ) from exc
         base_url = os.environ.get(cfg.get("base_url_env", ""), cfg.get("base_url"))
         kwargs = {"model": model, "api_key": api_key, "base_url": base_url,
-                  "timeout": timeout, "max_retries": 2}
+                  "timeout": timeout, "max_retries": demo_retries if demo_retries is not None else 2}
+        if demo_cb is not None:
+            kwargs["callbacks"] = [demo_cb]
         # Reasoning models (gpt-5*, o1/o3) use max_completion_tokens and only the
         # default temperature; classic chat models use max_tokens + temperature.
         if model.startswith(("gpt-5", "o1", "o3", "o4")):
@@ -225,7 +263,9 @@ def build_chat_model(provider: str, model: str, *, temperature: float = 0.0,
         ) from exc
     return ChatAnthropic(
         model=model, api_key=api_key,
-        temperature=temperature, max_tokens=max_tokens, timeout=timeout, max_retries=2,
+        temperature=temperature, max_tokens=max_tokens, timeout=timeout,
+        max_retries=demo_retries if demo_retries is not None else 2,
+        callbacks=[demo_cb] if demo_cb is not None else None,
     )
 
 

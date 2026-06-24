@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 from flask import Flask, jsonify, render_template, request, url_for
 
 import config
+import demo_budget
 import knowledge_graph as kg
 import cached_store
 import ingestion
@@ -26,6 +27,20 @@ from providers import (
 config.load_env()
 # Resolve LANGSMITH_PROJECT_ID -> current project name for tracing (best-effort).
 config.ensure_tracing_project()
+
+# DEMO_MODE isolation safety net: a public demo must never run against the owner's
+# cloud store. Refuse to start if pointed at Supabase / any cloud DB URL.
+if demo_budget.demo_enabled():
+    _cloud = [v for v in ("SUPABASE_DB_URL", "CACHED_STORE_DB_URL", "MEMORY_DB_URL",
+                          "SKILL_GRAPH_DB_URL") if os.environ.get(v, "").strip()]
+    if (os.environ.get("CACHED_STORE_BACKEND", "").strip().lower() == "supabase"
+            or os.environ.get("MEMORY_BACKEND", "").strip().lower() == "supabase"
+            or _cloud):
+        raise SystemExit(
+            "DEMO_MODE refuses to start against cloud storage. For the demo set "
+            "CACHED_STORE_BACKEND=local and MEMORY_BACKEND=local, and unset "
+            "SUPABASE_DB_URL / CACHED_STORE_DB_URL / MEMORY_DB_URL / SKILL_GRAPH_DB_URL "
+            "(visitor activity must stay in the throwaway demo data dir).")
 
 try:
     from anthropic import Anthropic
@@ -70,6 +85,91 @@ def _inject_asset_version():
             return ""
 
     return {"asset_v": asset_v}
+
+
+# --- Public demo gate: feature blocks + rate limit + per-visitor budget keying -
+# Everything here is centralized in one before_request hook (no per-route
+# decorators) and is a no-op unless DEMO_MODE is set.
+import functools  # noqa: E402
+import threading as _threading  # noqa: E402
+import time as _time  # noqa: E402
+from collections import deque, defaultdict  # noqa: E402
+
+_demo_hits: dict = defaultdict(deque)
+_demo_lock = _threading.Lock()
+
+
+def _demo_key() -> str:
+    """Visitor identity for rate-limit + budget keying (first proxy hop, else IP)."""
+    xff = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    return xff or request.remote_addr or "anon"
+
+
+def _demo_is_blocked(path: str, method: str) -> bool:
+    """Features disabled for public visitors: agent, evaluation experiments, MCP,
+    the heavy skill-graph/eval/refine flows, and all destructive DELETEs (visitors
+    add to the shared ephemeral store but can't delete seed/shared content)."""
+    if method == "DELETE":
+        return True
+    if path in ("/api/agent/ask", "/api/agent/maintain",
+                "/api/rag/eval", "/api/rag/crossdoc", "/api/rag/crossdoc/labels",
+                "/api/rag/ragas", "/api/rag/dataset", "/api/rag/experiment",
+                "/api/mcp/call", "/api/mcp/write", "/api/mcp/ingest",
+                "/api/skill/graph/resume"):
+        return True
+    if path.startswith("/api/skill/graph/build"):
+        return True
+    if path.startswith("/api/skill/") and path.rsplit("/", 1)[-1] in (
+            "eval", "review", "rebuild", "refine"):
+        return True
+    return False
+
+
+@app.before_request
+def _demo_gate():
+    if not demo_budget.demo_enabled():
+        return
+    demo_budget.set_key(_demo_key())
+    p = request.path
+    if not p.startswith("/api/") or p == "/api/demo-status":
+        return
+    if _demo_is_blocked(p, request.method):
+        return jsonify({"error": "This feature is disabled in the public demo."}), 403
+    # Rate limit (per-visitor + global), sliding 60s window. Limits are read live
+    # so they're env-tunable without a restart.
+    rpm = int(os.environ.get("DEMO_RPM", "20"))
+    grpm = int(os.environ.get("DEMO_GLOBAL_RPM", "120"))
+    key, now = demo_budget.get_key(), _time.time()
+    with _demo_lock:
+        for k in (key, "__global__"):
+            dq = _demo_hits[k]
+            while dq and now - dq[0] > 60:
+                dq.popleft()
+        if len(_demo_hits[key]) >= rpm or len(_demo_hits["__global__"]) >= grpm:
+            return jsonify({"error": "Too many requests — please slow down a moment."}), 429
+        _demo_hits[key].append(now)
+        _demo_hits["__global__"].append(now)
+    # Budget pre-check on spending requests → clean 429 when already exhausted.
+    if request.method == "POST":
+        try:
+            demo_budget.check_budget()
+        except demo_budget.BudgetExceededError as e:
+            return jsonify({"error": str(e)}), 429
+
+
+@app.errorhandler(demo_budget.BudgetExceededError)
+def _demo_budget_error(e):  # backstop for mid-call exhaustion that propagates
+    return jsonify({"error": str(e)}), 429
+
+
+@app.route("/api/demo-status")
+def api_demo_status():
+    st = demo_budget.status()
+    if st.get("demo"):
+        st["features"] = {"read": True, "qa": True, "kg_view": True, "kg_build": True,
+                          "skill_build": True, "agent": False, "eval": False, "delete": False}
+    return jsonify(st)
+
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -240,7 +340,11 @@ def _find_logo():
 
 @app.route("/")
 def index():
-    return render_template("index.html", logo_url=_find_logo())
+    return render_template(
+        "index.html", logo_url=_find_logo(),
+        demo=demo_budget.demo_enabled(),
+        demo_general=demo_budget.general_model()[1] if demo_budget.demo_enabled() else "",
+        demo_code=demo_budget.code_model()[1] if demo_budget.demo_enabled() else "")
 
 
 @app.route("/api/providers")
@@ -667,6 +771,8 @@ def api_kg_integrate():
     use_agent = bool(data.get("use_agent", False))
     provider = (data.get("provider") or "auto").strip().lower()
     model = (data.get("model") or "").strip()
+    if demo_budget.demo_enabled():
+        use_agent = False  # no unbounded deepagents fan-out for visitors
 
     extract_fn = None
     used_provider = "heuristic"
@@ -955,6 +1061,9 @@ def api_skill_build():
             else None)
     if not (chunk_ids or text or query or tags):
         return jsonify({"error": "Provide context: chunk_ids, text, query, or tags."}), 400
+    # In the demo, skip the eval fan-out (rubric panel + triggering) so a skill
+    # build stays within a visitor's small budget; generation itself is on.
+    _demo = demo_budget.demo_enabled()
     try:
         import skill_agent
         res = skill_agent.build_skill(
@@ -963,8 +1072,8 @@ def api_skill_build():
             goal=(data.get("goal") or "").strip(),
             provider=(data.get("provider") or "auto").strip().lower(),
             model=(data.get("model") or "").strip() or None,
-            run_rubric=bool(data.get("run_rubric", True)),
-            run_triggering=bool(data.get("run_triggering", True)),
+            run_rubric=False if _demo else bool(data.get("run_rubric", True)),
+            run_triggering=False if _demo else bool(data.get("run_triggering", True)),
             use_tools=bool(data.get("use_tools", True)),
             backend=(data.get("backend") or "").strip().lower() or None,
             judge_provider=(data.get("judge_provider") or "").strip().lower() or None,
@@ -1314,7 +1423,7 @@ def api_rag_search():
         return jsonify({"error": "A query is required."}), 400
     # "Show more" grows k from the client; cap it so re-rank stays bounded.
     k = max(1, min(int(data.get("k") or 10), 50))
-    rerank = bool(data.get("rerank", True))
+    rerank = bool(data.get("rerank", True)) and not demo_budget.demo_enabled()
     mmr = bool(data.get("mmr", False))
     try:
         import rag
@@ -1333,7 +1442,7 @@ def api_rag_ask():
     provider = (data.get("provider") or "auto").strip().lower()
     model = (data.get("model") or "").strip()
     k = int(data.get("k") or 6)
-    rerank = bool(data.get("rerank", True))
+    rerank = bool(data.get("rerank", True)) and not demo_budget.demo_enabled()
     mmr = bool(data.get("mmr", False))
     hybrid = bool(data.get("hybrid", True))
     # Optional "focus": cached-item ids to scope the answer (drives ICL regimes).

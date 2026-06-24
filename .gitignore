@@ -9,6 +9,9 @@ env/
 .claude/
 .agents/
 skills-lock.json
+
+# Public-demo runtime data (throwaway, owner-seeded; never commit)
+demo_data/
 .env
 .env.local
 .env.*.bak
