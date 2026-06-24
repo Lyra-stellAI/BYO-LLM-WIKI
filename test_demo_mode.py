@@ -400,6 +400,37 @@ def test_inflight_cap_429():
         _demo_off()
 
 
+def test_preflight_flags_empty_reply():
+    # Preflight must catch a model that returns empty (the gemini-3.5-flash class
+    # of silent failure) and pass a healthy one. Stub build_chat_model + embeddings.
+    _demo_on()
+    try:
+        import providers, embeddings
+        class _Msg:
+            def __init__(self, c): self.content = c
+        class _Chat:
+            def __init__(self, c): self._c = c
+            def invoke(self, _): return _Msg(self._c)
+        # general → empty, code → "OK"
+        orig_bcm, orig_avail, orig_eq = (providers.build_chat_model,
+            embeddings.embeddings_available, embeddings.embed_query)
+        providers.build_chat_model = lambda p, m, **k: _Chat("" if "gemini" in m else "OK")
+        embeddings.embeddings_available = lambda: True
+        import numpy as np
+        embeddings.embed_query = lambda *a, **k: np.zeros(4, dtype="float32")
+        try:
+            res = demo_budget.preflight(verbose=False)
+        finally:
+            providers.build_chat_model, embeddings.embeddings_available, embeddings.embed_query = (
+                orig_bcm, orig_avail, orig_eq)
+        by_role = {r["role"]: r for r in res}
+        assert by_role["general"]["ok"] is False, "empty reply must be flagged"
+        assert by_role["code"]["ok"] is True
+        assert by_role["embeddings"]["ok"] is True
+    finally:
+        _demo_off()
+
+
 def test_off_mode_is_noop():
     _demo_off()
     import providers

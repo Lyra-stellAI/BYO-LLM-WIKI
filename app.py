@@ -1808,5 +1808,18 @@ def api_kg_ingest_files():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    _demo = demo_budget.demo_enabled()
+    if _demo:
+        # Ping the pinned models/embeddings once so a wrong model id (which can
+        # return empty with no error) surfaces at boot, not as blank answers.
+        if os.environ.get("DEMO_SKIP_PREFLIGHT", "").strip().lower() not in ("1", "true", "yes", "on"):
+            try:
+                demo_budget.preflight()
+            except Exception as exc:  # noqa: BLE001  (never block startup on the check)
+                print(f"[demo preflight] skipped: {exc}")
+        print(f"[demo] public demo mode — general={demo_budget.general_model()[1]} "
+              f"code={demo_budget.code_model()[1]} on :{port}")
     # threaded=True so background skill builds + job-status polls are served concurrently.
-    app.run(host="0.0.0.0", port=port, debug=True, threaded=True)
+    # In the public demo, debug MUST be off: the Werkzeug debugger exposes
+    # tracebacks and a PIN-gated code-execution console — unacceptable publicly.
+    app.run(host="0.0.0.0", port=port, debug=not _demo, threaded=True)

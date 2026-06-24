@@ -219,6 +219,69 @@ def status(key: str | None = None) -> dict:
         }
 
 
+# --- startup preflight -------------------------------------------------------
+def preflight(verbose: bool = True) -> list[dict]:
+    """Ping each pinned model once at boot and report whether it actually returns
+    content. A model id can be silently wrong (e.g. gemini-3.5-flash returns an
+    EMPTY completion with no error on Google's endpoint), which would make the
+    demo serve blank answers — this surfaces that immediately. Warns, never
+    crashes; skip with DEMO_SKIP_PREFLIGHT=1. Embeddings are checked too since
+    Q&A needs them. Returns a list of per-check dicts."""
+    import providers
+    results: list[dict] = []
+
+    def _chat_ok(provider: str, model: str, role: str):
+        try:
+            # Generous max_tokens: some pinned models (e.g. gemini-2.5-flash) are
+            # reasoning models that spend tokens thinking before any visible
+            # output, so a tiny cap yields a false "empty" even when healthy.
+            chat = providers.build_chat_model(provider, model, max_tokens=256)
+            msg = chat.invoke("Reply with the single word OK.")
+            text = getattr(msg, "content", "")
+            if isinstance(text, list):
+                text = " ".join(c.get("text", "") for c in text if isinstance(c, dict))
+            ok = bool((text or "").strip())
+            results.append({"role": role, "provider": provider, "model": model,
+                            "ok": ok, "detail": "empty reply" if not ok else "ok"})
+        except Exception as exc:  # noqa: BLE001
+            results.append({"role": role, "provider": provider, "model": model,
+                            "ok": False, "detail": f"{type(exc).__name__}: {exc}"})
+
+    gp, gm = general_model()
+    _chat_ok(gp, gm, "general")
+    cp, cm = code_model()
+    if (cp, cm) != (gp, gm):
+        _chat_ok(cp, cm, "code")
+    # Embeddings (Q&A retrieval needs them).
+    try:
+        import embeddings as emb
+        if emb.embeddings_available():
+            vec = emb.embed_query("preflight")
+            results.append({"role": "embeddings", "provider": "openai",
+                            "model": emb.DEFAULT_EMBED_MODEL,
+                            "ok": bool(getattr(vec, "size", 0)), "detail": "ok"})
+        else:
+            results.append({"role": "embeddings", "provider": "openai",
+                            "model": emb.DEFAULT_EMBED_MODEL, "ok": False,
+                            "detail": "OPENAI_API_KEY not set (Q&A retrieval will fail)"})
+    except Exception as exc:  # noqa: BLE001
+        results.append({"role": "embeddings", "provider": "openai", "model": "?",
+                        "ok": False, "detail": f"{type(exc).__name__}: {exc}"})
+
+    if verbose:
+        import sys
+        for r in results:
+            mark = "ok " if r["ok"] else "WARN"
+            line = f"[demo preflight] {mark} {r['role']}: {r['provider']}/{r['model']} — {r['detail']}"
+            print(line, file=(sys.stdout if r["ok"] else sys.stderr))
+        if any(not r["ok"] for r in results):
+            print("[demo preflight] One or more pinned models/embeddings are not "
+                  "returning content — the demo may serve blank answers. Check the "
+                  "model ids (DEMO_MODEL / DEMO_CODE_MODEL) and API keys.",
+                  file=sys.stderr)
+    return results
+
+
 # --- metering proxy for raw provider SDK clients -----------------------------
 # config.traced_* returns meter_client(client, family) in demo, so every
 # client.chat.completions.create / client.embeddings.create / client.messages.create
