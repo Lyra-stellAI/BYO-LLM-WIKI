@@ -93,6 +93,11 @@ function renderLinkContext(r) {
 // --- Cached store: extract many URLs, then ingest once for reuse everywhere --
 let extractItems = [];
 
+// Web-search "Show more" state: initial count, per-click step, hard cap, and the
+// URLs checked before a re-render (preserved across "Show more").
+const WEB_BASE = 10, WEB_STEP = 10, WEB_MAX = 30;
+let webN = WEB_BASE, lastWebQuery = "", preservedChecks = new Set();
+
 function parseUrls(text = "") {
   return text.split(/[\s,]+/).map((s) => s.trim()).filter((s) => isUrl(s));
 }
@@ -258,7 +263,7 @@ function renderSearchResults(data) {
   </div>`;
   const cards = data.results.map((r) => `
     <article class="result-card pickable">
-      <input type="checkbox" class="search-pick" value="${escapeHTML(r.url)}" aria-label="Select this result" />
+      <input type="checkbox" class="search-pick" value="${escapeHTML(r.url)}" ${preservedChecks.has(r.url) ? "checked" : ""} aria-label="Select this result" />
       <div class="result-card-body">
         <h3><a href="${escapeHTML(r.url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(r.title || r.url)}</a></h3>
         <div class="url">${escapeHTML(r.url)}</div>
@@ -267,7 +272,13 @@ function renderSearchResults(data) {
       </div>
     </article>
   `).join("");
-  resultsEl.innerHTML = toolbar + cards;
+  // Offer "Show more" when we got a full page back (more may exist) and we're
+  // under the cap.
+  const more = (data.results.length >= webN && webN < WEB_MAX)
+    ? `<div class="search-more"><button class="btn btn-secondary btn-sm" id="searchMoreBtn" type="button">Show more results</button></div>`
+    : "";
+  resultsEl.innerHTML = toolbar + cards + more;
+  preservedChecks = new Set();   // consumed
 
   resultsEl.querySelectorAll("[data-summarize]").forEach((btn) => {
     btn.addEventListener("click", () => { queryEl.value = btn.dataset.summarize; doSummarize(); });
@@ -280,6 +291,8 @@ function renderSearchResults(data) {
   });
   document.getElementById("extractSelectedBtn")?.addEventListener("click", (e) =>
     extractSelectedSearch(e.currentTarget));
+  document.getElementById("searchMoreBtn")?.addEventListener("click", () => doSearch(true));
+  updateSearchPickCount();   // reflect any restored selections in the button
 }
 
 function renderSummary(data) {
@@ -381,15 +394,23 @@ function updateProviderStatus() {
   }
 }
 
-async function doSearch() {
+async function doSearch(more = false) {
   const query = queryEl.value.trim();
   if (!query) { setStatus("Type something to search.", "error"); return; }
+  // "Show more" grows the count for the same query and keeps current selections;
+  // a fresh query resets both.
+  if (more && query === lastWebQuery) {
+    webN = Math.min(webN + WEB_STEP, WEB_MAX);
+    preservedChecks = new Set([...resultsEl.querySelectorAll(".search-pick:checked")].map((c) => c.value));
+  } else {
+    webN = WEB_BASE; lastWebQuery = query; preservedChecks = new Set();
+  }
   clearStatus(); resultsEl.innerHTML = ""; setBusy(true);
   setStatus(isUrl(query)
     ? `<span class="spinner"></span>Fetching and extracting context from the link…`
     : `<span class="spinner"></span>Searching for "${escapeHTML(query)}"…`);
   try {
-    const data = await postJSON("/api/search", { query });
+    const data = await postJSON("/api/search", { query, max_results: webN });
     clearStatus();
     renderSearchResults(data);
   } catch (e) {
@@ -419,7 +440,7 @@ async function doSummarize() {
   }
 }
 
-searchBtn.addEventListener("click", doSearch);
+searchBtn.addEventListener("click", () => doSearch(false));
 if (extractBtn) extractBtn.addEventListener("click", doExtractAll);
 summarizeBtn.addEventListener("click", doSummarize);
 providerEl.addEventListener("change", () => {

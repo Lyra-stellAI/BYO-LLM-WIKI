@@ -414,6 +414,7 @@ kbd {
   background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
 }
 .search-pick-all { font-size: 0.9rem; font-weight: 600; cursor: pointer; user-select: none; }
+.search-more { text-align: center; margin-top: 12px; }
 .search-pick-all input { margin-right: 6px; vertical-align: middle; }
 .result-card.pickable { display: flex; align-items: flex-start; gap: 12px; }
 .result-card.pickable .search-pick { margin-top: 5px; width: 17px; height: 17px; flex: 0 0 auto; cursor: pointer; }
