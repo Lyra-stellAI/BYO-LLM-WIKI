@@ -1,0 +1,45 @@
+# Render Blueprint — one-click deploy of the BYO-WIKI public demo.
+# In Render: New → Blueprint → connect this repo. Render reads this file, creates
+# the web service, and prompts for the three secret keys (sync:false) in the
+# dashboard. Everything else (DEMO_MODE, budget knobs, local backends) is preset.
+#
+# Single worker on purpose: the demo budget ledger + rate limiter are in-process,
+# so multiple workers would multiply the spend cap. One worker + threads is right.
+services:
+  - type: web
+    name: byo-wiki-demo
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn wsgi:app --workers 1 --threads 8 --timeout 120 --bind 0.0.0.0:$PORT
+    healthCheckPath: /api/demo-status
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.13"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: DEMO_MODE
+        value: "1"
+      - key: CACHED_STORE_BACKEND
+        value: local
+      - key: MEMORY_BACKEND
+        value: local
+      - key: KG_DATA_DIR
+        value: demo_data
+      - key: LANGSMITH_TRACING
+        value: "false"
+      - key: DEMO_VISITOR_USD
+        value: "0.05"
+      - key: DEMO_GLOBAL_USD
+        value: "5.0"
+      - key: DEMO_RPM
+        value: "20"
+      - key: DEMO_GLOBAL_RPM
+        value: "120"
+      # Secrets — Render prompts for these on deploy (never stored in the repo).
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DASHSCOPE_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false

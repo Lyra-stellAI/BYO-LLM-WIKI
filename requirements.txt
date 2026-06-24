@@ -1,4 +1,7 @@
 flask>=3.0.0
+# Production WSGI server (deployment via Procfile / render.yaml). The Flask dev
+# server in app.py __main__ is for local use only.
+gunicorn>=22.0.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 anthropic>=0.40.0

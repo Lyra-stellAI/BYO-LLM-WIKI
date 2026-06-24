@@ -1,0 +1,7 @@
+{
+  "name": "library",
+  "embed_model": "text-embedding-3-small",
+  "dim": 1536,
+  "chunks": 805,
+  "sections": 221
+}
