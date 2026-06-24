@@ -303,8 +303,10 @@ def api_search():
         except Exception as e:  # noqa: BLE001
             return jsonify({"error": f"Could not extract context from link: {e}"}), 500
 
+    # "Show more" grows max_results from the client; cap it to keep latency sane.
+    n = max(1, min(int(data.get("max_results") or 10), 30))
     try:
-        results = web_search(query)
+        results = web_search(query, max_results=n)
         return jsonify({"query": query, "kind": "web", "results": results})
     except Exception as e:
         return jsonify({"error": f"Search failed: {e}"}), 500
