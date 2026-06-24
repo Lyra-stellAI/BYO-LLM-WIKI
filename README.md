@@ -249,7 +249,7 @@ mcp-list · mcp-ingest · mcp-call · mcp-serve      # MCP client + serve-as-ser
 
 Common flags: `--provider`, `--model`, `--rerank/--no-rerank`, `--mmr`, `--no-agent`.
 
-## Screenshots
+## A Quick Preview
 
 The web UI in action — one image per tab.
 
