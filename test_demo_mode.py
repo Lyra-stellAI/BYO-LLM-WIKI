@@ -273,6 +273,133 @@ def test_isolation_guard_refuses_cloud():
     assert raised, "DEMO_MODE must refuse to start against cloud storage"
 
 
+# --- adversarial-review regressions: confirmed bypasses must stay closed ------
+def test_summarize_pins_model_in_demo():
+    # /api/summarize must ignore a visitor-supplied expensive model and run the
+    # pinned cheap one (was a model-pin escape).
+    c, app = _client(DEMO_RPM="1000")
+    try:
+        captured = {}
+        orig = app.generate_ai_summary
+        app.generate_ai_summary = lambda provider, model, *a, **k: (
+            captured.update(provider=provider, model=model) or "summary text")
+        try:
+            r = c.post("/api/summarize", json={"input": "x" * 500,
+                       "provider": "anthropic", "model": "claude-opus-4-8"})
+        finally:
+            app.generate_ai_summary = orig
+        assert r.status_code == 200, r.get_json()
+        assert captured.get("model") == "gemini-3.5-flash", captured
+        assert captured.get("provider") == "gemini", captured
+    finally:
+        _demo_off()
+
+
+def test_skill_build_forces_pipeline_backend_in_demo():
+    # claude_code backend (opus CLI subprocess, unmetered) must be overridden to
+    # the pinned/metered pipeline backend.
+    c, app = _client(DEMO_RPM="1000")
+    try:
+        import skill_agent
+        captured = {}
+        orig = skill_agent.build_skill
+        skill_agent.build_skill = lambda **kw: (captured.update(kw) or
+            {"skill": {"id": "s"}, "status": "ok"})
+        try:
+            c.post("/api/skill/build", json={"text": "make a thing",
+                   "backend": "claude_code", "model": "claude-opus-4-8"})
+        finally:
+            skill_agent.build_skill = orig
+        assert captured.get("backend") == "pipeline", captured
+    finally:
+        _demo_off()
+
+
+def test_claude_code_agent_refuses_in_demo():
+    # Defense in depth: the subprocess generator itself refuses under DEMO_MODE.
+    _demo_on()
+    try:
+        import skill_claude_agent
+        raised = False
+        try:
+            skill_claude_agent.generate({}, model="claude-opus-4-8")
+        except skill_claude_agent.ClaudeAgentError as e:
+            raised = "demo" in str(e).lower()
+        assert raised, "claude_code generate must refuse in demo"
+    finally:
+        _demo_off()
+
+
+def test_bulk_ingestion_routes_blocked_in_demo():
+    c, app = _client(DEMO_RPM="1000")
+    try:
+        for path in ("/api/rag/ingest", "/api/kg/ingest/urls", "/api/kg/ingest/files"):
+            assert c.post(path, json={}).status_code == 403, path
+    finally:
+        _demo_off()
+
+
+def test_xff_spoofing_does_not_mint_fresh_budget():
+    # Without DEMO_TRUST_PROXY, the visitor key must be the peer address, NOT a
+    # spoofable X-Forwarded-For — so rotating XFF can't reset the per-visitor key.
+    c, app = _client(DEMO_RPM="1000")
+    try:
+        with app.app.test_request_context("/api/x", headers={"X-Forwarded-For": "1.2.3.4"},
+                                          environ_base={"REMOTE_ADDR": "10.0.0.9"}):
+            assert app._demo_key() == "10.0.0.9"
+        # With trust enabled + a valid IP, XFF is honored.
+        os.environ["DEMO_TRUST_PROXY"] = "1"
+        with app.app.test_request_context("/api/x", headers={"X-Forwarded-For": "1.2.3.4"},
+                                          environ_base={"REMOTE_ADDR": "10.0.0.9"}):
+            assert app._demo_key() == "1.2.3.4"
+        # ...but a garbage XFF falls back to the peer.
+        with app.app.test_request_context("/api/x", headers={"X-Forwarded-For": "not-an-ip"},
+                                          environ_base={"REMOTE_ADDR": "10.0.0.9"}):
+            assert app._demo_key() == "10.0.0.9"
+    finally:
+        _demo_off()
+
+
+def test_extract_batch_capped_in_demo():
+    c, app = _client(DEMO_RPM="1000", DEMO_EXTRACT_MAX="5")
+    try:
+        many = "\n".join(f"https://example.com/{i}" for i in range(20))
+        r = c.post("/api/cache/extract", json={"urls": many})
+        assert r.status_code == 400 and "at most 5" in r.get_json().get("error", "")
+    finally:
+        _demo_off()
+
+
+def test_ssrf_guard_blocks_internal_hosts():
+    _demo_on()
+    try:
+        import app
+        # metadata IP + loopback + private must be rejected when block_internal
+        assert app.is_valid_url("http://169.254.169.254/latest/meta-data/", block_internal=True) is False
+        assert app.is_valid_url("http://127.0.0.1:5000/", block_internal=True) is False
+        assert app.is_valid_url("http://localhost/", block_internal=True) is False
+        # a normal public URL still validates
+        assert app.is_valid_url("https://example.com/page", block_internal=True) is True
+    finally:
+        _demo_off()
+
+
+def test_inflight_cap_429():
+    # The per-visitor in-flight counter rejects excess concurrent POSTs (bounds
+    # the budget TOCTOU window). Simulate by leaving the counter elevated.
+    c, app = _client(DEMO_RPM="1000", DEMO_INFLIGHT="2")
+    try:
+        with app._demo_lock:
+            app._demo_inflight["7.7.7.7"] = 2
+        r = c.post("/api/rag/ask", json={"question": "hi"},
+                   headers={}, environ_base={"REMOTE_ADDR": "7.7.7.7"})
+        assert r.status_code == 429 and "concurrent" in r.get_json().get("error", "")
+    finally:
+        with app._demo_lock:
+            app._demo_inflight.pop("7.7.7.7", None)
+        _demo_off()
+
+
 def test_off_mode_is_noop():
     _demo_off()
     import providers

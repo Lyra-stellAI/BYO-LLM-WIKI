@@ -73,7 +73,11 @@ def main() -> int:
     urls = _seed_urls()
     provider = os.environ.get("DEMO_SEED_PROVIDER", "gemini")
     model = os.environ.get("DEMO_SEED_MODEL", "gemini-3.5-flash")
-    do_kg = os.environ.get("DEMO_SEED_KG", "1").strip().lower() in ("1", "true", "yes", "on")
+    # Vectorizing already mirrors a rich structural graph (sources/sections/
+    # chunks/edges) into the KG, which the KG view renders fully. LLM entity/
+    # topic extraction is an OPTIONAL enrichment that's slow (sequential calls
+    # over every chunk) — off by default. Set DEMO_SEED_KG=1 to run it.
+    do_kg = os.environ.get("DEMO_SEED_KG", "0").strip().lower() in ("1", "true", "yes", "on")
     print(f"Seeding {len(urls)} URLs into {os.environ.get('KG_DATA_DIR', 'data')} "
           f"(model {provider}/{model}, kg={do_kg})")
 
