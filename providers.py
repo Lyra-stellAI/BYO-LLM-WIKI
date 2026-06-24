@@ -56,8 +56,8 @@ PROVIDERS: dict[str, dict] = {
         "env_key": "GEMINI_API_KEY",
         "base_url_env": "GEMINI_BASE_URL",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "default_model": "gemini-3.5-flash",
-        "models": ["gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.5-flash"],
+        "default_model": "gemini-2.5-flash",
+        "models": ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-pro", "gemini-3-flash-preview"],
         "openai_compatible": True,
     },
     "mistral": {

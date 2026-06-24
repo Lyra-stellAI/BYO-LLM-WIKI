@@ -107,7 +107,7 @@ def test_record_response_reads_each_usage_shape():
 
         demo_budget.set_key("shapes")
         base = demo_budget.status("shapes")["visitor_remaining_usd"]
-        demo_budget.record_response("openai-chat", "gemini-3.5-flash",
+        demo_budget.record_response("openai-chat", "gemini-2.5-flash",
                                     _R(_U(prompt_tokens=1000, completion_tokens=1000)))
         demo_budget.record_response("anthropic", "claude-haiku-4-5",
                                     _R(_U(input_tokens=1000, output_tokens=1000,
@@ -127,7 +127,7 @@ def test_missing_usage_still_charges():
             usage = None
         demo_budget.set_key("nousage")
         b = demo_budget.status("nousage")["visitor_remaining_usd"]
-        demo_budget.record_response("openai-chat", "gemini-3.5-flash", _R())
+        demo_budget.record_response("openai-chat", "gemini-2.5-flash", _R())
         assert demo_budget.status("nousage")["visitor_remaining_usd"] < b
     finally:
         _demo_off()
@@ -153,7 +153,7 @@ def test_meter_proxy_charges_chat_and_embeddings():
         demo_budget.set_key("proxy")
         mc = demo_budget.meter_client(_FakeOpenAI(), "openai")
         b = demo_budget.status("proxy")["visitor_remaining_usd"]
-        mc.chat.completions.create(model="gemini-3.5-flash", messages=[])
+        mc.chat.completions.create(model="gemini-2.5-flash", messages=[])
         m = demo_budget.status("proxy")["visitor_remaining_usd"]
         mc.embeddings.create(model="text-embedding-3-small", input=["x"])
         e = demo_budget.status("proxy")["visitor_remaining_usd"]
@@ -182,10 +182,10 @@ def test_resolvers_pin_cheap_models_ignoring_request():
     _demo_on()
     try:
         import providers  # resolvers check demo live; no reload needed
-        assert providers.resolve_provider_model("anthropic", "claude-opus-4-8") == ("gemini", "gemini-3.5-flash")
+        assert providers.resolve_provider_model("anthropic", "claude-opus-4-8") == ("gemini", "gemini-2.5-flash")
         assert providers.skill_generator("anthropic", "claude-opus-4-8") == ("qwen", "qwen3-coder-next")
         assert providers.judge_panel("gemini") == []
-        jp, jm, cross = providers.resolve_judge("gemini", "gemini-3.5-flash", "openai", "gpt-4o")
+        jp, jm, cross = providers.resolve_judge("gemini", "gemini-2.5-flash", "openai", "gpt-4o")
         assert (jp, cross) == ("gemini", False)
     finally:
         _demo_off()
@@ -223,7 +223,7 @@ def test_demo_status_reports_pins_and_features():
     try:
         st = c.get("/api/demo-status").get_json()
         assert st["demo"] is True
-        assert st["general_model"] == "gemini-3.5-flash"
+        assert st["general_model"] == "gemini-2.5-flash"
         assert st["code_model"] == "qwen3-coder-next"
         assert st["features"]["agent"] is False and st["features"]["eval"] is False
         assert st["features"]["qa"] is True and st["features"]["skill_build"] is True
@@ -289,7 +289,7 @@ def test_summarize_pins_model_in_demo():
         finally:
             app.generate_ai_summary = orig
         assert r.status_code == 200, r.get_json()
-        assert captured.get("model") == "gemini-3.5-flash", captured
+        assert captured.get("model") == "gemini-2.5-flash", captured
         assert captured.get("provider") == "gemini", captured
     finally:
         _demo_off()

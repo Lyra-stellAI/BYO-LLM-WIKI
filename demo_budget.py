@@ -42,9 +42,13 @@ def demo_enabled() -> bool:
 
 # --- pinned (cheapest) models, role-based; all env-overridable ---------------
 def general_model() -> tuple[str, str]:
-    """(provider, model) for general tasks: summaries, Q&A, KG extraction."""
+    """(provider, model) for general tasks: summaries, Q&A, KG extraction.
+
+    gemini-2.5-flash is the cheap, real, stable flash model on Google's
+    OpenAI-compatible endpoint (gemini-3.5-flash does NOT exist there and returns
+    empty). Override with DEMO_MODEL."""
     return (os.environ.get("DEMO_GENERAL_PROVIDER", "gemini").strip(),
-            os.environ.get("DEMO_MODEL", "gemini-3.5-flash").strip())
+            os.environ.get("DEMO_MODEL", "gemini-2.5-flash").strip())
 
 
 def code_model() -> tuple[str, str]:
@@ -74,8 +78,10 @@ def _window_sec() -> float:
 # trips early rather than late. Unknown models hit _DEFAULT_PRICE (high).
 _DEFAULT_PRICE = (2.0, 10.0)
 _PRICES: dict[str, tuple[float, float]] = {
-    "gemini-3.5-flash": (0.10, 0.40),
     "gemini-2.5-flash": (0.10, 0.40),
+    "gemini-flash-latest": (0.10, 0.40),
+    "gemini-3-flash-preview": (0.20, 0.80),
+    "gemini-2.5-pro": (1.50, 6.00),
     "qwen3-coder-next": (1.00, 5.00),
     "qwen3-coder-plus": (1.00, 5.00),
     "qwen3-coder-flash": (0.30, 1.20),
