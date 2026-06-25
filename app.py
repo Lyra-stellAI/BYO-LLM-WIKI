@@ -311,11 +311,70 @@ def fetch_page(url: str) -> dict:
 
     soup = BeautifulSoup(resp.text, "lxml")
     title = (soup.title.string.strip() if soup.title and soup.title.string else url)
+    date = _extract_date(soup)
     text = ingestion.main_text(soup)
     text = re.sub(r"\n{2,}", "\n\n", text)
     text = re.sub(r"[ \t]+", " ", text)
 
-    return {"title": title, "url": url, "text": text}
+    return {"title": title, "url": url, "text": text, "date": date}
+
+
+_DATE_RE = re.compile(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})")
+
+
+def _norm_date(raw: str) -> str:
+    """Normalize a raw date string to YYYY-MM-DD, or '' if no date is found."""
+    m = _DATE_RE.search(raw or "")
+    if not m:
+        return ""
+    y, mo, d = m.groups()
+    return f"{y}-{int(mo):02d}-{int(d):02d}"
+
+
+# Common published/updated-date metadata keys across news, blogs (Webflow/WP),
+# and scholarly pages (arXiv citation_*). Checked in priority order.
+_DATE_META = (
+    ("property", "article:published_time"), ("property", "og:article:published_time"),
+    ("property", "article:modified_time"), ("property", "og:updated_time"),
+    ("name", "citation_date"), ("name", "citation_publication_date"),
+    ("name", "citation_online_date"), ("name", "datePublished"),
+    ("name", "parsely-pub-date"), ("name", "sailthru.date"),
+    ("name", "dc.date"), ("name", "dc.date.issued"), ("name", "date"),
+    ("name", "pubdate"), ("name", "publishdate"), ("name", "lastmod"),
+    ("itemprop", "datePublished"), ("itemprop", "dateModified"),
+)
+
+
+def _extract_date(soup) -> str:
+    """Best-effort published/updated date (YYYY-MM-DD) from page metadata, so
+    Read results can be sorted by date. Tries meta tags, JSON-LD, then <time>.
+    Empty string when unknown."""
+    for key, val in _DATE_META:
+        tag = soup.find("meta", attrs={key: val})
+        if tag and tag.get("content"):
+            d = _norm_date(tag["content"])
+            if d:
+                return d
+    # JSON-LD (schema.org) — common on modern CMS/news sites.
+    import json as _json
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            blob = _json.loads(script.string or "")
+        except Exception:  # noqa: BLE001
+            continue
+        for node in (blob if isinstance(blob, list) else [blob]):
+            if isinstance(node, dict):
+                for k in ("datePublished", "dateCreated", "dateModified", "uploadDate"):
+                    if node.get(k):
+                        d = _norm_date(str(node[k]))
+                        if d:
+                            return d
+    t = soup.find("time")
+    if t:
+        d = _norm_date(t.get("datetime") or t.get_text(strip=True))
+        if d:
+            return d
+    return ""
 
 
 def extractive_summary(text: str, max_sentences: int = 6) -> str:
@@ -470,6 +529,7 @@ def extract_link_context(url: str) -> dict:
         "snippet": lead,
         "context": text,
         "chars": len(text),
+        "date": page.get("date", ""),
     }
 
 
@@ -612,6 +672,7 @@ def api_cache_extract():
             results.append({
                 "url": ctx["url"], "title": ctx["title"], "snippet": ctx["snippet"],
                 "text": ctx["context"], "chars": ctx["chars"],
+                "date": ctx.get("date", ""),
                 "content_hash": content_hash,
                 "already_cached": existing is not None,
                 "cache_id": rid if existing else None,

@@ -10,7 +10,7 @@ entities, builds topics, and writes synthesis pages. One Flask app — web UI, J
 and a `runner.py` CLI. Inspired by LangChain's *llm-wiki* deep-agents example, but it
 builds a private, on-disk library instead of syncing to a hub. **Local-first**: every
 store is plain JSON/SQLite under `data/`; cloud is opt-in.
-
+**Try Live Demo**: https://byo-wiki-demo.onrender.com
 
 ## Features
 
@@ -249,13 +249,14 @@ mcp-list · mcp-ingest · mcp-call · mcp-serve      # MCP client + serve-as-ser
 
 Common flags: `--provider`, `--model`, `--rerank/--no-rerank`, `--mmr`, `--no-agent`.
 
-## Screenshots
+## A Quick Preview
 
 The web UI in action — one image per tab.
 
 **Read** — search / fetch + extract / summarize / save-to-KG.
 
-![Read tab — fetch, extract and cache a page](docs/screenshots/ingest_to_store.png)
+![Read tab — search, fetch, extract and cache a page](docs/screenshots/ingest_to_store.png)
+![](docs/screenshots/read-search.png)
 
 **Cache** — reuse extracted content across the KG, Q&A and Memory without re-fetching.
 

@@ -98,6 +98,46 @@ let extractItems = [];
 const WEB_BASE = 10, WEB_STEP = 10, WEB_MAX = 30;
 let webN = WEB_BASE, lastWebQuery = "", preservedChecks = new Set();
 
+// --- result sorting (Read tab: web search + extracted results) ---------------
+let searchResults = [];        // last web-search results (with original index _i)
+let searchSort = "relevance";  // current sort key for web-search results
+let extractSort = "relevance"; // current sort key for extracted results
+
+function domainOf(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch (e) { return ""; }
+}
+function _dateVal(r) {
+  const t = Date.parse((r && r.date) || "");
+  return isNaN(t) ? null : t;
+}
+// Options adapt to the data: date only when some result has a parseable date
+// (web-search results have none), size only when some result has a char count.
+function sortOptions(items) {
+  const opts = [{ k: "relevance", l: "Relevance" },
+                { k: "title", l: "Title (A–Z)" },
+                { k: "source", l: "Source (A–Z)" }];
+  if (items.some(_dateVal)) opts.push({ k: "date", l: "Newest first" });
+  if (items.some((r) => r.chars)) opts.push({ k: "size", l: "Largest first" });
+  return opts;
+}
+function sortSelectHtml(id, current, opts) {
+  return `<label class="result-sort">Sort
+    <select id="${id}">${opts.map((o) =>
+      `<option value="${o.k}" ${o.k === current ? "selected" : ""}>${o.l}</option>`).join("")}</select>
+  </label>`;
+}
+function applySort(items, key) {
+  const byI = (x, y) => (x._i ?? 0) - (y._i ?? 0);
+  const cmp = {
+    relevance: byI,
+    title: (x, y) => (x.title || x.url || "").localeCompare(y.title || y.url || ""),
+    source: (x, y) => domainOf(x.url).localeCompare(domainOf(y.url)) || byI(x, y),
+    date: (x, y) => ((_dateVal(y) ?? -Infinity) - (_dateVal(x) ?? -Infinity)) || byI(x, y),
+    size: (x, y) => ((y.chars || 0) - (x.chars || 0)) || byI(x, y),
+  }[key] || byI;
+  return items.slice().sort(cmp);
+}
+
 function parseUrls(text = "") {
   return text.split(/[\s,]+/).map((s) => s.trim()).filter((s) => isUrl(s));
 }
@@ -165,35 +205,49 @@ async function ingestAllNew(btn) {
   }
 }
 
+let _extractErrors = [];
+
 function renderExtractResults(payload) {
   const results = payload.results || [];
-  const errors = payload.errors || [];
-  extractItems = results;
+  _extractErrors = payload.errors || [];
+  // Tag each with its canonical index so data-ingest stays stable under sorting
+  // (ingest handlers + ingestAllNew index into extractItems by this number).
+  extractItems = results.map((r, i) => ({ ...r, _i: i }));
+  extractSort = "relevance";
   if (!results.length) {
-    resultsEl.innerHTML = `<div class="status">No content could be extracted.</div>` + errBlock(errors);
+    resultsEl.innerHTML = `<div class="status">No content could be extracted.</div>` + errBlock(_extractErrors);
     return;
   }
+  paintExtract();
+}
+
+function paintExtract() {
+  const results = extractItems;
   const newCount = results.filter((r) => !r.already_cached).length;
   const header = `<div class="extract-header">
     <span>Extracted ${results.length} page(s)${newCount < results.length ? ` · ${results.length - newCount} already cached` : ""}.</span>
-    ${newCount ? `<button class="btn btn-primary btn-sm" id="ingestAllBtn">Ingest all new (${newCount})</button>` : ""}
+    <span class="extract-head-right">
+      ${sortSelectHtml("extractSortSel", extractSort, sortOptions(results))}
+      ${newCount ? `<button class="btn btn-primary btn-sm" id="ingestAllBtn">Ingest all new (${newCount})</button>` : ""}
+    </span>
   </div>`;
-  const cards = results.map((r, i) => `
-    <article class="result-card" data-idx="${i}">
+  const cards = applySort(results, extractSort).map((r) => `
+    <article class="result-card" data-idx="${r._i}">
       <h3><a href="${escapeHTML(r.url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(r.title || r.url)}</a></h3>
       <div class="url">${escapeHTML(r.url)}</div>
       <div class="meta">
         <span class="badge">${r.already_cached ? "cached" : "new"}</span>
         <span>${(r.chars || 0).toLocaleString()} chars</span>
+        ${r.date ? `<span>· ${escapeHTML(r.date)}</span>` : ""}
       </div>
       <p class="snippet">${escapeHTML(r.snippet || "")}</p>
       <div class="context-actions">
         <button class="btn btn-secondary" data-summarize="${escapeHTML(r.url)}">Summarize this</button>
-        <button class="btn btn-primary" data-ingest="${i}" ${r.already_cached ? "disabled" : ""}>${r.already_cached ? "Already cached ✓" : "Ingest to store"}</button>
+        <button class="btn btn-primary" data-ingest="${r._i}" ${r.already_cached ? "disabled" : ""}>${r.already_cached ? "Already cached ✓" : "Ingest to store"}</button>
       </div>
     </article>
   `).join("");
-  resultsEl.innerHTML = header + errBlock(errors) + cards;
+  resultsEl.innerHTML = header + errBlock(_extractErrors) + cards;
   resultsEl.querySelectorAll("[data-summarize]").forEach((btn) =>
     btn.addEventListener("click", () => { queryEl.value = btn.dataset.summarize; doSummarize(); }));
   resultsEl.querySelectorAll("[data-ingest]").forEach((btn) =>
@@ -202,6 +256,9 @@ function renderExtractResults(payload) {
       ingestToStore({ url: r.url, source_title: r.title, text: r.text }, btn);
     }));
   document.getElementById("ingestAllBtn")?.addEventListener("click", (e) => ingestAllNew(e.currentTarget));
+  document.getElementById("extractSortSel")?.addEventListener("change", (e) => {
+    extractSort = e.target.value; paintExtract();
+  });
 }
 
 async function doExtractAll() {
@@ -257,11 +314,17 @@ function renderSearchResults(data) {
     resultsEl.innerHTML = `<div class="status">No results found for "${escapeHTML(data.query)}".</div>`;
     return;
   }
+  searchResults = data.results.map((r, i) => ({ ...r, _i: i }));  // _i = relevance order
+  paintSearch();
+}
+
+function paintSearch() {
   const toolbar = `<div class="search-toolbar">
     <label class="search-pick-all"><input type="checkbox" id="searchPickAll" /> Select all</label>
+    ${sortSelectHtml("searchSortSel", searchSort, sortOptions(searchResults))}
     <button class="btn btn-primary btn-sm" id="extractSelectedBtn" disabled>Extract & cache selected (0)</button>
   </div>`;
-  const cards = data.results.map((r) => `
+  const cards = applySort(searchResults, searchSort).map((r) => `
     <article class="result-card pickable">
       <input type="checkbox" class="search-pick" value="${escapeHTML(r.url)}" ${preservedChecks.has(r.url) ? "checked" : ""} aria-label="Select this result" />
       <div class="result-card-body">
@@ -274,7 +337,7 @@ function renderSearchResults(data) {
   `).join("");
   // Offer "Show more" when we got a full page back (more may exist) and we're
   // under the cap.
-  const more = (data.results.length >= webN && webN < WEB_MAX)
+  const more = (searchResults.length >= webN && webN < WEB_MAX)
     ? `<div class="search-more"><button class="btn btn-secondary btn-sm" id="searchMoreBtn" type="button">Show more results</button></div>`
     : "";
   resultsEl.innerHTML = toolbar + cards + more;
@@ -292,6 +355,12 @@ function renderSearchResults(data) {
   document.getElementById("extractSelectedBtn")?.addEventListener("click", (e) =>
     extractSelectedSearch(e.currentTarget));
   document.getElementById("searchMoreBtn")?.addEventListener("click", () => doSearch(true));
+  document.getElementById("searchSortSel")?.addEventListener("change", (e) => {
+    // Keep current selections across the re-sort re-render.
+    preservedChecks = new Set([...resultsEl.querySelectorAll(".search-pick:checked")].map((c) => c.value));
+    searchSort = e.target.value;
+    paintSearch();
+  });
   updateSearchPickCount();   // reflect any restored selections in the button
 }
 
@@ -403,7 +472,7 @@ async function doSearch(more = false) {
     webN = Math.min(webN + WEB_STEP, WEB_MAX);
     preservedChecks = new Set([...resultsEl.querySelectorAll(".search-pick:checked")].map((c) => c.value));
   } else {
-    webN = WEB_BASE; lastWebQuery = query; preservedChecks = new Set();
+    webN = WEB_BASE; lastWebQuery = query; preservedChecks = new Set(); searchSort = "relevance";
   }
   clearStatus(); resultsEl.innerHTML = ""; setBusy(true);
   setStatus(isUrl(query)
