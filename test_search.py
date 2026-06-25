@@ -173,6 +173,43 @@ def test_html_extraction_strips_citation_boilerplate():
     assert "context engineering" in text and "real findings" in text  # content kept
 
 
+def test_extract_date_from_metadata():
+    """_extract_date pulls a published/updated date (for sort-by-date on the Read
+    tab); returns '' when the page has none."""
+    from bs4 import BeautifulSoup
+    s1 = BeautifulSoup(
+        '<html><head><meta property="article:published_time" content="2026-03-14T09:00:00Z">'
+        '</head><body>x</body></html>', "lxml")
+    assert app._extract_date(s1) == "2026-03-14"
+    s2 = BeautifulSoup('<html><body><time datetime="2025-12-01">Dec</time></body></html>', "lxml")
+    assert app._extract_date(s2) == "2025-12-01"
+    s3 = BeautifulSoup("<html><body><p>no date here</p></body></html>", "lxml")
+    assert app._extract_date(s3) == ""
+    # arXiv-style citation_date with slashes → normalized to ISO
+    s4 = BeautifulSoup('<html><head><meta name="citation_date" content="2025/09/02">'
+                       "</head><body>x</body></html>", "lxml")
+    assert app._extract_date(s4) == "2025-09-02"
+    # JSON-LD datePublished (modern CMS/news)
+    s5 = BeautifulSoup('<html><head><script type="application/ld+json">'
+                       '{"@type":"Article","datePublished":"2026-06-16T10:00:00Z"}'
+                       "</script></head><body>x</body></html>", "lxml")
+    assert app._extract_date(s5) == "2026-06-16"
+
+
+def test_fetch_page_includes_date_field():
+    """fetch_page returns a `date` (possibly empty) so extract results can sort by it."""
+    orig = app.requests.get
+    html = (b'<html><head><title>T</title>'
+            b'<meta property="article:published_time" content="2026-01-09T00:00:00Z">'
+            b'</head><body><article><p>Body content here.</p></article></body></html>')
+    app.requests.get = lambda *a, **k: _FakeResp(html, {"Content-Type": "text/html"})
+    try:
+        page = app.fetch_page("https://example.com/post")
+        assert page.get("date") == "2026-01-09", page
+    finally:
+        app.requests.get = orig
+
+
 # --- live test against the three reference links ----------------------------
 
 def test_live_links_extract_context():
