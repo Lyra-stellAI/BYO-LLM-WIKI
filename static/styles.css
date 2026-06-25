@@ -705,6 +705,20 @@ kbd {
   gap: 12px; flex-wrap: wrap; margin-bottom: 14px; color: var(--muted);
   font-size: 0.9rem;
 }
+.extract-head-right { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* Result sort dropdown (Read search + extracted results) */
+.result-sort {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 0.82rem; color: var(--muted); white-space: nowrap;
+}
+.result-sort select {
+  font: inherit; font-size: 0.82rem; padding: 4px 8px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer;
+}
+.result-sort select:hover { border-color: var(--border-strong); }
+.search-toolbar .result-sort { margin-left: auto; }   /* push sort to the right of Select all */
+.search-toolbar #extractSelectedBtn { margin-left: 10px; }
 .cache-vectorize { margin-top: 6px; }
 .cache-picker-head {
   display: flex; align-items: center; justify-content: space-between;
