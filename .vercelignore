@@ -1,0 +1,27 @@
+# What NOT to upload to Vercel. Deliberately does not exclude demo_data/ — that
+# directory is gitignored but force-committed, and it IS the demo's seeded
+# library, so it has to ship in the bundle.
+.venv
+venv
+env
+__pycache__
+*.pyc
+*.log
+
+# Local (owner) data dir — the demo reads demo_data/ instead.
+data
+
+# Tests, evaluation corpora and screenshots: never executed at runtime.
+conftest.py
+test_*.py
+eval
+docs
+
+# Secrets and machine-local tooling state.
+.env
+.env.*
+env.txt
+mcp.json
+.claude
+.agents
+skills-lock.json

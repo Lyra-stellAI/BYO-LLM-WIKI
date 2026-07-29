@@ -1,0 +1,18 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "demo": {
+      "root": ".",
+      "entrypoint": "app:app",
+      "functions": {
+        "app.py": {
+          "maxDuration": 300,
+          "excludeFiles": "{eval/**,docs/**,test_*.py,conftest.py,.venv/**,**/__pycache__/**}"
+        }
+      }
+    }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": { "service": "demo" } }
+  ]
+}

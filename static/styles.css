@@ -252,6 +252,19 @@ a:hover { text-decoration: underline; }
 }
 
 /* --- Layout / panels ------------------------------------------------------ */
+/* Public-demo banner (shown only when /api/demo-status reports demo=true) */
+.demo-banner {
+  max-width: var(--maxw); margin: 0 auto 6px; padding: 10px 16px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  border: 1px solid var(--accent); border-radius: 10px;
+  font-size: 0.88rem; line-height: 1.5; color: var(--text);
+}
+.demo-banner code { font-size: 0.82rem; padding: 1px 5px; border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.demo-banner a { color: var(--accent); font-weight: 600; white-space: nowrap; }
+.demo-banner .demo-low { color: var(--error); font-weight: 700; }
+body.demo-mode #provider[disabled], body.demo-mode #model[disabled] { opacity: 0.7; cursor: not-allowed; }
+
 .container {
   max-width: var(--maxw);
   margin: 0 auto;

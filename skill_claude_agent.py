@@ -202,6 +202,17 @@ def generate(bundle: dict, *, goal: str = "", revision_note: str = "", model: st
     Returns ``{"artifact": <skill dict>, "meta": {...}, "workspace": <dir>}``. The
     artifact is recovered from ``skill.json`` on disk when written, else parsed from
     the model's final message. Raises ``ClaudeAgentError`` on failure."""
+    # Defense in depth: never spawn the CLI subprocess in the public demo. It
+    # runs outside the demo model pin and spend meter (a separate process with
+    # the operator's env), so it would be an unmetered, unpinned bypass.
+    try:
+        import demo_budget
+        if demo_budget.demo_enabled():
+            raise ClaudeAgentError(
+                "The Claude Code agent backend is disabled in the public demo; "
+                "use the in-process pipeline backend.")
+    except ImportError:
+        pass
     runner = _runner or _default_runner
     if runner is _default_runner and not cli_available():
         raise ClaudeAgentError(

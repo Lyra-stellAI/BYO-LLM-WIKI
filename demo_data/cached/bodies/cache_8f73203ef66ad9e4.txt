@@ -1,0 +1,155 @@
+LLM Evaluation Framework: Trajectories vs. Outputs
+Create agents
+Key Takeaways
+Evaluating only final outputs misses critical failures in AI agents that make dozens of internal decisions, tool calls, and reasoning steps before producing an answer.
+Trajectory evaluation scores the entire execution path (tools selected, intermediate reasoning, conversation turns) across three dimensions: grounding and context use, user experience quality, and security and safety.
+Production monitoring creates a data flywheel where real-world failures flow into annotation queues for expert review, then become regression tests that prevent the same bugs from reaching users again.
+LLM-as-a-judge scales evaluation beyond manual review, but requires structured rubrics, multiple judge passes, and calibration against human-labeled examples to mitigate bias and drift.
+There are teams that can tell you their agent's final answer was correct. Far fewer can tell you whether it called the right tool on step 14 of a 50-step reasoning chain, or whether it hallucinated a document retrieval that happened to get lucky. That's the gap output-only evaluation leaves open.
+Assessing whether an AI agent achieved its goal requires scoring the entire trajectory: the tools selected, the intermediate reasoning, and how the conversation unfolded. This article covers how to measure AI agent quality, build evaluation datasets, and create the production-to-dataset loop that turns failures into regression tests.
+Why input-output evaluation breaks down for AI agents
+The dominant approach to large language model (LLM) evaluation treats scoring as a testing problem. You define test cases, run them against your system, compare outputs to expected answers, and catch regressions before shipping. This framing worked when an LLM app was simpler. A prompt went in, a response came out, and you measured whether that response meets your criteria.
+AI agents break this model. A single user request triggers dozens of internal steps, tool calls, and reasoning loops before producing a final answer. The agent retrieves documents, reasons over them, calls external APIs, re-plans based on intermediate results, and eventually synthesizes a response. Evaluating only that final response tells you nothing about whether the agent retrieved the right documents, selected the appropriate tools, or reasoned correctly at each step. That’s why end-to-end evaluation has to capture the entire execution path.
+Hidden failures in correct answers
+Correct final answers can hide broken reasoning. An AI agent hallucinating a tool call might still produce the right result. Retrieving irrelevant documents might not matter if the synthesis gets lucky. When you only score final outputs, these failures remain invisible until they compound into serious errors in production.
+Multi-turn conversations make this problem worse. Consider a customer support agent handling a refund request. Over the course of eight conversational turns, the agent makes tool calls to check order status, verify return eligibility, and process the refund. Each of these steps creates an opportunity for hidden failures that won't show up in the final response.
+Scoring the final "Your refund has been processed" message misses important questions:
+Did the agent verify the customer's identity?
+Did it follow the correct refund policy?
+Did it log the interaction properly?
+The final answer is only one artifact of a much larger execution.
+What metrics matter for AI agent evaluation
+AI agent evaluation requires metrics across three dimensions that go beyond answer correctness. Selecting the right
+evaluation metrics
+for your specific use case determines whether you catch failures before users encounter them.
+Grounding and context use
+The first dimension measures whether your AI agent retrieves and reasons over the right information. For RAG-based agents, this means evaluating retrieval quality separately from response quality. Did the agent find the relevant documents? Did it faithfully represent what those documents contain, or did it hallucinate claims that aren't grounded in the retrieved context?
+Faithfulness evaluation specifically checks whether agent responses can be logically inferred from the provided context. Models generate plausible-sounding text regardless of factual grounding. Faithfulness evaluation catches hallucinations that sound accurate but aren't supported by the documents the agent retrieved.
+User experience quality
+The second dimension measures whether the conversation achieved the user's goal. This includes topic relevancy and outcome assessment across the full conversation arc. Topic relevancy ensures questions and responses stay within your application's intended domain. Different workflows require different success criteria based on their specific use case.
+Negative sentiment detection provides a signal for user frustration. When users express dissatisfaction, it often indicates that the agent failed at its task even if the response was technically accurate.
+Security and safety
+The third dimension monitors for policy violations and malicious inputs. This includes toxicity detection in both inputs and outputs, prompt injection attempts that try to subvert agent guardrails, and violations of domain-specific policies. Security evaluation also identifies vulnerabilities in how your agent handles adversarial prompts.
+Dimension
+What it measures
+Example metrics
+Grounding and context use
+Did the agent retrieve and reason over the right information?
+Faithfulness, context precision, context recall
+User experience quality
+Did the conversation achieve the user's goal?
+Topic relevancy, sentiment, outcome success
+Security and safety
+Did the agent stay within policy boundaries?
+Toxicity, prompt injection detection, policy compliance
+How to evaluate AI agent trajectories
+Trajectory evaluation means scoring the entire execution path an AI agent takes rather than just its final output. This includes every tool call, every intermediate reasoning step, and every turn in a multi-turn conversation. Teams building complex agent workflows need visibility into each decision point.
+For multi-turn agents, you evaluate whether the agent achieved the user's goal across an entire conversation. You score semantic intent, outcomes, and the agent trajectory including tool calls. The evaluation runs once a thread completes. It uses criteria that assess the full interaction rather than individual messages. This approach lets teams optimize agent behavior at each step.
+What trajectory evaluation looks like in practice
+When you evaluate a customer support agent handling a billing dispute, trajectory evaluation asks a sequence of questions about the execution path:
+Did the agent correctly identify the dispute type?
+Did it retrieve the relevant account information?
+Did it follow the escalation policy when appropriate?
+Did it resolve the issue within the expected number of turns?
+Each question targets a different step in the execution. The answers inform different kinds of improvements.
+Trajectory evaluation requires capturing the full execution tree of your AI agent. You need tracing that reveals every tool selected, every document retrieved, and every reasoning step the model took. Without this visibility, you reconstruct execution flows from logs and outputs manually. This manual process doesn't scale beyond simple debugging.
+AI observability
+must capture the relationships between steps.
+Traditional tracing tools display spans in a flat, linear sequence. This approach works well for API monitoring, where each request follows a simple path. However, AI agents operate differently. They engage in multi-turn conversations where each turn may trigger nested tool calls and reasoning operations. When tracing tools linearize these spans instead of preserving their hierarchical structure, the conversational context gets lost. You can no longer see which tool calls belonged to which conversational turn, or how the agent's reasoning evolved across the interaction. This makes it nearly impossible to understand why an agent behaved the way it did.
+When you don't need trajectory evaluation
+Trajectory evaluation adds real overhead—building reference trajectories, maintaining evaluator infrastructure, and paying for LLM-as-a-judge calls. It's not always worth it. Here's how we think about when to use it and when simpler approaches are fine.
+Output-only evaluation is sufficient when:
+Your application is single-turn with no tool use. A straightforward RAG app that retrieves documents and generates a response can be evaluated effectively with retrieval metrics (context precision, recall) and response quality checks (faithfulness, relevance). There's no trajectory to score because there's no multi-step execution.
+The execution path is deterministic. If your system always follows the same steps in the same order—retrieve, then generate, then format—you don't gain much from scoring the path. The output tells you what you need to know.
+You're in early prototyping. When you're still figuring out what your agent should do, investing in trajectory evaluation is premature. Start with output-level checks to validate the basic behavior, then add trajectory evaluation once the agent's workflow stabilizes.
+Trajectory evaluation pays off when:
+Your agent makes multiple tool calls or retrieval steps, and the order or selection of those steps matters for correctness. A customer support agent that should verify identity before processing a refund needs trajectory-level checks. The final "refund processed" output looks the same whether or not the identity step happened.
+Correct outputs can mask broken reasoning. If your agent can arrive at the right answer through wrong intermediate steps (lucky hallucinations, irrelevant retrievals that happen to not affect the output), trajectory evaluation is the only way to catch those hidden failures before they compound.
+You're operating in regulated or high-stakes domains. Healthcare, finance, and legal applications often need to demonstrate that the agent followed a specific protocol, not just that it produced the right answer. Trajectory evaluation gives you that audit trail.
+The decision isn't binary. Many teams start with output evaluation, add trajectory checks for their most critical workflows, and expand coverage as they observe production failures that output metrics alone can't explain.
+How to score trajectories with LLM-as-a-judge
+LLM-as-a-judge
+has become the practical default for trajectory evaluation because human labeling cannot scale across the volume of traces AI agents generate. You define evaluation criteria and have an LLM score traces against those criteria. You might ask if the response is grounded in the retrieved context, if the agent selected the appropriate tool, or if the conversation achieved the user's intent. Using AI models for
+LLM evals
+introduces its own challenges that teams must address.
+This approach scales evaluation beyond what human reviewers can handle. Teams can score thousands of production traces automatically. They get statistically significant signals on system performance without bottlenecking on manual review.
+Judge reliability as a design constraint
+Judge reliability has become a key design consideration that teams must address from the start. LLM judges exhibit bias and inconsistency, like scoring responses differently based on presentation order, favoring verbose answers over concise ones, and drifting in their scoring behavior over time. Teams need to actively mitigate these problems rather than treating judge outputs as ground truth.
+Mitigation strategies include:
+Using structured rubrics that constrain judge outputs to specific criteria rather than open-ended quality assessments
+Running multiple judge passes and aggregating scores to reduce variance
+Calibrating judges against human-labeled examples to detect and correct systematic bias
+Writing evaluator function logic that decomposes complex assessments into simpler, more reliable checks
+Monitoring judge consistency over time to catch drift before it corrupts your evaluation signals
+LLM-as-a-judge shifts the evaluation problem rather than eliminating it. You still need human judgment, but now it focuses on defining criteria, calibrating judges, and reviewing edge cases rather than scoring every trace manually.
+How to build pre-production evaluation datasets for AI agents
+Pre-production evaluation requires building evaluation datasets with ground truth annotations that cover your AI agent's expected behavior. For simple LLM applications, ground truth means expected answers. For AI agents, ground truth must include expected tool calls and reasoning steps.
+Organizing test cases
+Most teams organize test cases into three categories:
+Happy path scenarios where the agent should succeed
+Edge cases that test boundary conditions and unusual inputs
+Adversarial inputs designed to probe failure modes like prompt injection or off-topic requests
+These categories establish benchmarks for your AI agent's expected behavior across different conditions.
+For each test case, annotate the expected trajectory. If your AI agent should verify customer identity before processing a refund, that verification step is part of the ground truth. If it should retrieve specific document types for a given query, those retrieval expectations belong in your annotations.
+Getting domain expertise into your datasets
+Building these datasets is time-consuming and typically requires domain expertise. Domain experts understand what correct behavior looks like for specialized use cases in ways that engineers may not.
+Annotation queues
+streamline this process by routing traces to the right reviewers and capturing their corrections in a structured format that feeds back into your test sets.
+Start by seeding your datasets from production traces. When you identify a failure in production, convert that trace into a test case with the corrected trajectory as ground truth. This approach ensures your test coverage reflects actual user interactions rather than synthetic scenarios that may not capture real-world complexity.
+How to evaluate RAG and context-dependent AI agents
+Retrieval-augmented generation
+(RAG) agents add a layer of complexity to trajectory evaluation. Failures can originate in retrieval, reasoning, or the interaction between them. RAG evaluation requires decomposing quality into retrieval metrics and response faithfulness. Did we find the right documents? Did we reason correctly over them?
+Retrieval vs. reasoning failures
+Retrieval metrics measure whether your AI agent found relevant documents given the user's query. Context precision asks whether the retrieved documents were relevant. Context recall asks whether all relevant documents were retrieved. RAG pipelines often fail at retrieval before reasoning ever begins. These metrics help you distinguish retrieval failures from reasoning failures.
+Response faithfulness measures whether the AI agent's response is grounded in the retrieved context. A response can be factually correct but unfaithful, containing information that isn't present in the documents the agent retrieved. This means it is hallucinating rather than synthesizing.
+RAG evaluation stages. The stages of RAG evaluation and the specific failures they identify.
+Evaluation stage
+What it measures
+Failure it catches
+Retrieval quality
+Did the agent find the right documents?
+Wrong or missing context
+Response faithfulness
+Did the AI agent reason correctly over retrieved context?
+Hallucination despite good retrieval
+Attribution accuracy
+Can claims be traced to specific sources?
+Fabricated citations
+Multi-step retrieval and reasoning
+For AI agents, these evaluations become more complex because retrieval and reasoning happen multiple times within a single trajectory. An agent researching a complex question retrieves documents, reasons over them, determines it needs more information, retrieves additional documents, and synthesizes a final answer. Attribution must trace across all of these retrieval and reasoning steps.
+This is where trajectory-level tracing becomes essential. You need to see which documents were retrieved at each step, what the agent's intermediate reasoning looked like, and how that reasoning informed subsequent retrievals. Without this visibility, you cannot diagnose whether a failure originated in retrieval, reasoning, or the interaction between them.
+How to monitor AI agent evaluation in production
+Pre-production datasets catch known failure modes, but AI agents encounter novel situations in production that no test set anticipates. Production monitoring surfaces these failures by running evaluators on sampled live traffic and alerting when quality degrades. Real-time scoring of production traces catches issues as they emerge.
+Production monitoring operates on real user interactions rather than curated test cases. You sample a subset of production traces, run your evaluators against them, and track performance over time. When scores drop below thresholds, you investigate.
+Step-level and thread-level metrics
+For AI agents, production monitoring must track step-level metrics and thread-level outcomes. Step-level metrics catch tool call failures, retrieval quality degradation, and reasoning errors that don't surface in final outputs. Thread-level outcomes measure performance across complete conversations. They indicate whether interactions achieved their goals across multiple turns.
+Effective production monitoring includes:
+Sampling strategies that balance coverage with evaluation cost
+Dashboards that display aggregate evaluation results over time, grouped by metadata like models and inputs or user segments
+Alerts that trigger when metrics deviate from baselines
+Automations that route anomalous traces to review queues for human investigation
+From monitoring to regression tests
+The production monitoring loop closes when failures flow back into your test datasets. When monitoring identifies a problematic trace, you add that trace to an annotation queue for human review. The agent might have selected the wrong tool, hallucinated a policy, or failed to achieve the user's goal. A domain expert corrects the trajectory, specifying what the agent should have done. That corrected example joins your regression test dataset.
+Now, every future change to your AI agent runs against this test case. If the change would cause the same failure, your pre-production Evals catch it before the change reaches users. The bug stays fixed.
+The agent improvement loop
+This loop accelerates over time. Early in development, your test datasets are small and synthetic. As you observe production behavior, you accumulate real-world examples that reflect actual failure modes. Your evaluation coverage grows organically to match the complexity of your AI agent's interactions.
+We call this pattern the agent improvement loop. Production traces flow into the
+Insights Agent
+. This surfaces usage pattern insights that inform dataset creation. Those datasets feed
+evals
+. Evals drive improvements that generate new traces. This creates a reinforcing cycle: each iteration expands your evaluation coverage and strengthens your AI agent's reliability throughout the development lifecycle.
+Build your AI agent evaluation framework
+Evaluating AI agents requires capturing the full execution path. Customer support agents, research assistants, and multi-step workflows with tool use make dozens of decisions before producing final answers. Unlike unit testing in traditional software or
+pytest
+assertions that check deterministic outputs, AI agent evaluation must handle the nondeterministic nature of agent behavior.
+LangSmith
+captures the full execution tree so you can score trajectories.
+Multi-turn online evaluators
+score entire conversations including tool calls and reasoning steps.
+Online evaluations
+run judges on sampled production traffic. Annotation queues route complex traces to domain experts for human review. The automated trace-to-dataset workflow turns production failures into regression tests without manual recreation. Teams using models from any provider can instrument their AI agents with Python and start capturing the traces needed for trajectory evaluation, whether they orchestrate with LangGraph or any other framework.
+Teams succeeding with AI agents treat evaluation as continuous work, not a pre-launch checkbox. If you're watching your agents fail in production and still reconstructing what happened from logs, that's the gap LangSmith closes.
+Explore LangSmith
+, or
+talk with our team
+, to see how trajectory evaluation works in practice.

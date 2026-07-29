@@ -1,4 +1,7 @@
 flask>=3.0.0
+# Production WSGI server (deployment via Procfile / render.yaml). The Flask dev
+# server in app.py __main__ is for local use only.
+gunicorn>=22.0.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 anthropic>=0.40.0
@@ -27,7 +30,12 @@ langgraph-checkpoint-sqlite>=2.0.0
 # Contextual retrieval / vector library (Library Q&A tab, rag-* CLI modes).
 # Embeddings use the OpenAI API; hnswlib provides the HNSW index (numpy fallback).
 numpy>=1.24.0
-hnswlib>=0.8.0
+# hnswlib ships source-only on PyPI (no wheels for any version), so installing it
+# needs a C++ toolchain — which Vercel's Python builder does not provide, and the
+# build fails there. vectorstore._try_hnsw() already falls back to a numpy brute
+# -force scan on ImportError; at the demo library's scale (~800 chunks) that costs
+# microseconds. Uncomment for large local libraries where the index earns its keep.
+# hnswlib>=0.8.0
 
 # Optional: RAGAS evaluation (rag-ragas / POST /api/rag/ragas). Heavy deps; only
 # needed to run RAGAS faithfulness/answer-relevancy/context-precision metrics.

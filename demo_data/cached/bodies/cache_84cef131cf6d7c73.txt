@@ -1,0 +1,144 @@
+Why LLM observability and monitoring need evaluations
+Create agents
+Key Takeaways
+Traditional monitoring can show healthy latency and low error rates while users report hallucinations and wrong answers because these metrics don’t measure if an agent's output was actually good.
+Running
+evaluations
+on sampled production traffic scores responses against quality criteria that infrastructure metrics can't capture, giving teams a direct measure of whether the agent actually helped the user.
+When teams identify issues in production, they can save those real-world examples as test cases. This creates a continuous improvement cycle: problems discovered in live environments become permanent tests that prevent those same failures from happening again.
+Why AI agents need different observability
+AI agents and LLM applications are inherently unpredictable. The same input can produce different outputs on consecutive runs, and agent behavior varies even with identical models and inputs. An agent can have 99% uptime but still fail to follow user intent. Your APM dashboard shows healthy latency percentiles and low error rates, yet users report that the agent confidently provided incorrect information.
+Traditional monitoring confirms a request succeeded with a 200 OK status and acceptable latency, but it cannot detect when an agent selects the wrong tool or gets trapped in a reasoning loop.
+AI observability
+closes this gap by measuring whether the agentic reasoning process itself was correct.
+Running evals
+on sampled production traffic gives teams the signal they actually need: whether the agent's output was good. When teams identify issues in production, they can save those real-world examples as test cases, creating a continuous improvement cycle where production traces become datasets that power evaluations and systematic improvements.
+LLM observability has three pillars that give teams complete end-to-end visibility into agent behavior:
+Monitoring and tracing
+: Real-time performance metrics combined with execution path tracking across every agent step.
+Metrics and Evals
+: Automated and human-in-the-loop quality scoring, using criteria you define for your specific use case.
+Real-world context analysis
+: Understanding how users actually interact with your agents, including varying intents and edge cases that only emerge in production.
+The sections below break down how each pillar works in practice, starting with tracing.
+How tracing works in multi-step agent workflows
+A trace records the sequence of steps your application takes from receiving an input, through intermediate processing, to producing a final output. A run represents each step within a trace. Proper instrumentation captures every LLM call, tool invocation, and model output along the way. If you're familiar with
+OpenTelemetry
+, you can think of a run as a span.
+The tracing hierarchy
+Definitions and examples of core tracing primitives.
+Tracing primitive
+Technical definition
+Real-world example
+Run
+A single unit of work or operation within your AI agent
+One LLM call, one tool invocation, one retrieval step producing model outputs
+Trace
+The full execution tree for a request, containing all runs
+A user query that triggers retrieval, reasoning, tool calls, and a final response
+Thread
+A sequence of traces representing a single conversation
+A multi-turn support chat where context accumulates across messages
+Agents can execute dozens or hundreds of intermediate steps in a single workflow. To understand this complex behavior, you need the full execution tree. When the agent selects the wrong tool, you must see the inputs it received, the context it had, and the decision it made. When tracing a reasoning loop, you need to identify exactly where the loop started and what condition prevented it from exiting.
+Why tracing matters for debugging
+LangSmith
+groups multiple traces within a project and links traces from multi-turn conversations as a thread. This structure becomes critical when you debug production issues where the workflow issue spans multiple turns. A single-turn view would miss that the agent's context degraded over three prior exchanges.
+LangSmith creates high-fidelity traces that render this complete execution tree. This visibility is a must for debugging agents that execute hundreds of intermediate steps before producing a final answer.
+Tracing reveals the full execution path, but scoring whether that output was correct requires evaluations. To debug quality issues, you need evals that automatically score whether the agent's response actually solved the user's problem.
+What metrics teams track and why latency alone falls short
+Teams track four categories of key metrics for AI agents. The first three extend traditional monitoring, while the fourth introduces quality measurement.
+Key metrics for AI agents:
+Metric category
+Technical measurement
+Operational insight
+Tool call latency and response times
+Response time distribution (p50, p95, p99)
+Whether the system is fast enough for your UX requirements
+Input and output tokens per trace
+Token usage, cost attribution per step
+Where your spend is going and which steps drive costs
+Error rates
+Exceptions, timeouts, failed tool calls
+Whether the system is stable at the infrastructure level
+Agent quality and Evals
+Automated scoring against custom quality criteria
+Whether the response met the user's actual need
+Understanding these performance metrics helps teams identify where model performance degrades. LangSmith provides granular visibility into input and output tokens per trace and tool call latency at the step level. This lets you identify exactly which part of a workflow drives up costs or slows down responses.
+Operational visibility becomes actionable only when paired with quality metrics. Cost and latency are easily measurable, but answer quality requires explicit evals. This is why
+LLM observability tools
+offer evals alongside infrastructure dashboards.
+How to evaluate agent quality in production
+Online evals
+run on a sampled subset of live production traffic to provide real-time feedback on agent quality. Rather than evaluating every request (which would be expensive and slow), you configure sampling to evaluate enough requests to detect drift and quality degradation. This approach acts as an early warning system, helping you identify and address quality issues proactively while they're still manageable rather than waiting for widespread user complaints.
+What you can evaluate with LangSmith
+Hallucination detection
+: Check whether the agent invented facts or cited made up sources
+Reasoning quality
+: Assess whether the agent's logic was sound
+Intent alignment
+: Measure whether the agent actually addressed what the user asked
+Safety
+: Flag PII exposure, toxic content, prompt injection attempts, or policy violations
+Evals score agent outputs against specific criteria. This quality signal directly improves user experience by catching hallucinations before they damage trust.
+Configuring Evals in LangSmith
+You configure online evals in LangSmith through the UI. You navigate to your tracing project, create new evals, configure filters to target specific runs, and set a sampling rate. You then choose your evaluation type. Options include
+LLM-as-a-judge
+with defined criteria and a scoring rubric, or custom Python logic to check structure, validate outputs, or apply business rules.
+Evals run asynchronously on sampled traces, score each response against your criteria, and store the results alongside the trace. Over time, you build a quality signal that complements your infrastructure metrics.
+Multi-turn evals
+add another dimension. They evaluate whether your agent achieved the user's goal across an entire conversation. These run automatically on production threads and measure outcomes rather than individual outputs.
+How to alert on agent quality instead of just system health
+Traditional monitoring alerts you when latency exceeds thresholds or error rates spike. Quality-based alerting works differently. Instead of tracking system health metrics, you set alerts that fire when
+evaluation metrics
+drop below the thresholds you've defined for your agent.
+The alerting workflow
+Define evaluation criteria specific to your use case.
+You must determine what constitutes a good response for your agent. Each criterion becomes a scoring dimension, whether you measure accuracy, conciseness, or adherence to brand voice.
+Set score thresholds that indicate problems.
+For example, if your hallucination evals score below 3 on more than 5% of traces in an hour, you should investigate. Or if reasoning quality drops 20% week-over-week, your recent prompt updates likely degraded performance. Anomaly detection on these scores surfaces drift before it becomes a crisis.
+Configure alerts on those thresholds.
+LangSmith provides comprehensive tools to monitor live production traffic and act on insights automatically. When thresholds breach, you get notified.
+Drill into traces when alerts fire.
+The alert tells you quality degraded, and the traces tell you why. Root cause analysis becomes possible because you have the full execution context. You see the exact inputs, the agent's reasoning, and where things went wrong. This troubleshooting workflow identifies bottlenecks in reasoning, tool selection, or context retrieval.
+The practical impact
+Consider this hypothetical scenario:
+A customer support bot maintains 99.2% uptime with p95 latency around 1.8 seconds after a model update. Infrastructure metrics show the system is healthy.
+However, over 6 hours, hallucination Evals drop from 94% passing to 82% across 2,400 sampled production traces. When the hourly rate falls below the 88% threshold, an alert fires. Investigation reveals the root cause: the new model version struggled with citation accuracy when referencing documentation. It generated plausible-sounding policy details that didn't exist in the knowledge base.
+The team rolls back the update within 45 minutes of the alert, catching the issue before customer complaints arrive. Eval scores recover to 93% within the next monitoring window. Without quality-based alerting, this degradation would have been invisible, since infrastructure metrics showed no anomalies throughout the incident.
+How production traces become regression tests
+Alerting catches problems in real time. Once you identify an issue, you can turn it into a permanent fix by converting production traces into test datasets. LangSmith's
+Insights Agent
+reveals usage patterns from your production traffic. You can capture those patterns as datasets for future testing. When you find a problematic trace in production, add it to a dataset with a single click. That dataset becomes the ground truth for evaluations and regression testing.
+The flywheel workflow
+The cycle starts when you discover a workflow issue in production through online evals or user feedback. Add the problematic trace to a dataset in one click to capture the input, context, and expected behavior. Fix the issue in your agent's prompts, tools, or logic. Run
+offline evals
+against the dataset to confirm the fix works. The dataset persists as a regression test for every future change.
+This creates a continuous improvement loop. Every production workflow issue becomes a durable regression test. Production workloads generate the most valuable test data because they reflect real-world use cases rather than synthetic scenarios. Teams that build this habit accumulate test coverage that mirrors actual user behavior.
+When human judgment is required
+LangSmith's
+Annotation Queues
+support cases where automated evals are not enough. Domain experts can review, label, and correct complex traces. This is particularly critical for creating datasets in specialized domains like law or medicine. Ground truth in these fields requires subject matter expertise from clinicians, lawyers, analysts, and product managers.
+The teams that iterate fastest identify workflow issues in production, reproduce them reliably, verify fixes systematically, and compound their test coverage over time.
+Getting started with quality-based observability
+LangSmith supports
+OpenTelemetry-based tracing
+and works with any framework, including the
+LangChain framework
+and
+LangGraph
+. This telemetry integration allows you to route traces through existing observability platforms. LangSmith works alongside your APM tools to provide complementary capabilities. Your existing observability stack monitors infrastructure health and ensures servers run properly, while LangSmith focuses on agent quality and ensures your AI systems produce correct outputs.
+Tracing captures API calls to foundation model providers like OpenAI without adding latency to your application. The trace ingestion process runs asynchronously.
+Implementation path for technical teams:
+Start with tracing
+: Instrument your agent to capture execution paths. This gives you visibility into what's happening before you define what "good" means.
+Define quality criteria
+: Work with product and domain experts to establish evals that match your use case, such as hallucination detection for RAG systems, intent alignment for support bots, reasoning quality for complex workflows.
+Configure sampling and alerting
+: Set thresholds based on business impact. Don't evaluate every trace. Sample enough to detect drift without overwhelming your Eval budget.
+Build the data flywheel
+: Convert production failures into regression tests. Every issue caught becomes durable test coverage that prevents recurrence.
+Whether you build AI agents or complex workflows, an effective observability solution combines infrastructure metrics with quality signals.
+Explore LangSmith
+, or
+talk with our team
+, to start running evals on your production traffic today.

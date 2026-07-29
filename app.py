@@ -8,6 +8,12 @@ from bs4 import BeautifulSoup
 from flask import Flask, jsonify, render_template, request, url_for
 
 import config
+import demo_budget
+import demo_store
+# Must precede every module that resolves KG_DATA_DIR at import time (kg,
+# cached_store, memory, skill_library, skill_runs): on Vercel this repoints the
+# data dir at writable /tmp storage. No-op everywhere else.
+import vercel_bootstrap  # noqa: F401
 import knowledge_graph as kg
 import cached_store
 import ingestion
@@ -26,6 +32,20 @@ from providers import (
 config.load_env()
 # Resolve LANGSMITH_PROJECT_ID -> current project name for tracing (best-effort).
 config.ensure_tracing_project()
+
+# DEMO_MODE isolation safety net: a public demo must never run against the owner's
+# cloud store. Refuse to start if pointed at Supabase / any cloud DB URL.
+if demo_budget.demo_enabled():
+    _cloud = [v for v in ("SUPABASE_DB_URL", "CACHED_STORE_DB_URL", "MEMORY_DB_URL",
+                          "SKILL_GRAPH_DB_URL") if os.environ.get(v, "").strip()]
+    if (os.environ.get("CACHED_STORE_BACKEND", "").strip().lower() == "supabase"
+            or os.environ.get("MEMORY_BACKEND", "").strip().lower() == "supabase"
+            or _cloud):
+        raise SystemExit(
+            "DEMO_MODE refuses to start against cloud storage. For the demo set "
+            "CACHED_STORE_BACKEND=local and MEMORY_BACKEND=local, and unset "
+            "SUPABASE_DB_URL / CACHED_STORE_DB_URL / MEMORY_DB_URL / SKILL_GRAPH_DB_URL "
+            "(visitor activity must stay in the throwaway demo data dir).")
 
 try:
     from anthropic import Anthropic
@@ -54,6 +74,14 @@ except ImportError:  # tracing is optional
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+# Let static assets be cached. Flask's default is Cache-Control: no-cache, which
+# means a round trip per asset per page load — on a serverless host that is a
+# function invocation each time, and it also stops a CDN from caching them at all
+# (a Vercel `headers` rule does not help: this response header wins). Safe because
+# every static URL in the templates carries ?v=<mtime> from asset_v() below, so a
+# changed file is a new URL. One day rather than a year: nothing here is
+# content-hashed, so a bad cache should age out on its own.
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 86400
 
 
 @app.context_processor
@@ -71,6 +99,156 @@ def _inject_asset_version():
 
     return {"asset_v": asset_v}
 
+
+# --- Public demo gate: feature blocks + rate limit + per-visitor budget keying -
+# Everything here is centralized in one before_request hook (no per-route
+# decorators) and is a no-op unless DEMO_MODE is set.
+import time as _time  # noqa: E402
+
+# Counters live in demo_store (shared across instances when a Redis ledger is
+# configured, process-local otherwise) for the same reason the spend ledger does:
+# on a serverless host each instance would otherwise enforce its own limit.
+_RL_WINDOW_SEC = 60
+_RL_TTL = 120          # outlive the window; the key rotates every minute anyway
+_INFLIGHT_TTL = 300    # ceiling on a leaked slot if an instance dies mid-request
+
+
+def _rl_keys(key: str) -> tuple[str, str]:
+    """Per-visitor and global rate-limit keys for the current minute.
+
+    Bucketing by minute in the key (rather than keeping a sliding deque of
+    timestamps) is what lets the counter be a single atomic INCR. The trade-off
+    is a fixed window: a burst straddling a boundary can see up to 2x the limit
+    before it settles. Acceptable — the dollar ledger, not this, is the real cap.
+    """
+    minute = int(_time.time() // _RL_WINDOW_SEC)
+    prefix = demo_budget.key_prefix()
+    return f"{prefix}:rl:{minute}:{key}", f"{prefix}:rl:{minute}:__global__"
+
+
+def _inflight_key(key: str) -> str:
+    return f"{demo_budget.key_prefix()}:inflight:{key}"
+
+
+def _demo_key() -> str:
+    """Visitor identity for rate-limit + budget keying.
+
+    The Flask dev server sits directly on the network with no trusted proxy, so
+    the X-Forwarded-For header is fully attacker-controlled — trusting it lets a
+    visitor mint unlimited fresh per-visitor budget/rate slices by rotating it.
+    Use the real peer address. Only honor XFF when the operator opts in
+    (DEMO_TRUST_PROXY=1, i.e. a trusted reverse proxy is in front) AND the value
+    parses as a real IP."""
+    if os.environ.get("DEMO_TRUST_PROXY", "").strip().lower() in ("1", "true", "yes", "on"):
+        import ipaddress
+        raw = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        try:
+            ipaddress.ip_address(raw)
+            return raw
+        except ValueError:
+            pass
+    return request.remote_addr or "anon"
+
+
+# Routes disabled for public visitors. Bulk URL/file ingestion is included: the
+# demo ships a pre-seeded read-only library, so visitors don't need to fetch new
+# URLs en masse (avoids SSRF amplification + shared-store flooding via the
+# pipeline fetch path, which bypasses the per-page fetch_page SSRF guard).
+_DEMO_BLOCKED_EXACT = frozenset((
+    "/api/agent/ask", "/api/agent/maintain",
+    "/api/rag/eval", "/api/rag/crossdoc", "/api/rag/crossdoc/labels",
+    "/api/rag/ragas", "/api/rag/dataset", "/api/rag/experiment",
+    "/api/rag/ingest", "/api/kg/ingest/urls", "/api/kg/ingest/files",
+    "/api/mcp/call", "/api/mcp/write", "/api/mcp/ingest",
+    "/api/skill/graph/resume",
+))
+
+
+def _demo_is_blocked(path: str, method: str) -> bool:
+    if method == "DELETE":
+        return True
+    p = path.rstrip("/").lower() or "/"   # normalize trailing slash + case
+    if p in _DEMO_BLOCKED_EXACT:
+        return True
+    if p.startswith("/api/skill/graph/build"):
+        return True
+    if p.startswith("/api/skill/") and p.rsplit("/", 1)[-1] in (
+            "eval", "review", "rebuild", "refine"):
+        return True
+    return False
+
+
+def _demo_inflight_cap() -> int:
+    return int(os.environ.get("DEMO_INFLIGHT", "3"))
+
+
+@app.before_request
+def _demo_gate():
+    if not demo_budget.demo_enabled():
+        return
+    demo_budget.set_key(_demo_key())
+    p = request.path
+    if not p.startswith("/api/") or p == "/api/demo-status":
+        return
+    if _demo_is_blocked(p, request.method):
+        return jsonify({"error": "This feature is disabled in the public demo."}), 403
+    # Rate limit (per-visitor + global), fixed 60s window; limits read live.
+    rpm = int(os.environ.get("DEMO_RPM", "20"))
+    grpm = int(os.environ.get("DEMO_GLOBAL_RPM", "120"))
+    key = demo_budget.get_key()
+    is_post = request.method == "POST"
+    visitor_hits, global_hits = demo_store.bump(
+        [(k, _RL_TTL) for k in _rl_keys(key)])
+    if visitor_hits > rpm or global_hits > grpm:
+        return jsonify({"error": "Too many requests — please slow down a moment."}), 429
+    # Per-visitor in-flight cap on spending POSTs bounds the TOCTOU window
+    # (concurrent requests can otherwise each pass the budget pre-check before
+    # any records). Claimed here, released in _demo_after / _demo_teardown.
+    if is_post:
+        slot = _inflight_key(key)
+        if demo_store.bump([(slot, _INFLIGHT_TTL)])[0] > _demo_inflight_cap():
+            demo_store.release(slot)  # we took a slot we're not going to use
+            return jsonify({"error": "Too many concurrent requests — please retry in a moment."}), 429
+        request.environ["_demo_inflight_key"] = slot
+    # Budget pre-check on spending requests → clean 429 when already exhausted.
+    if is_post:
+        try:
+            demo_budget.check_budget()
+        except demo_budget.BudgetExceededError as e:
+            return jsonify({"error": str(e)}), 429
+
+
+@app.after_request
+def _demo_after(resp):
+    slot = request.environ.pop("_demo_inflight_key", None) if demo_budget.demo_enabled() else None
+    if slot is not None:
+        demo_store.release(slot)
+    return resp
+
+
+@app.teardown_request
+def _demo_teardown(exc):  # ensure the in-flight counter is released even on error
+    if not demo_budget.demo_enabled():
+        return
+    slot = request.environ.pop("_demo_inflight_key", None)
+    if slot is not None:
+        demo_store.release(slot)
+
+
+@app.errorhandler(demo_budget.BudgetExceededError)
+def _demo_budget_error(e):  # backstop for mid-call exhaustion that propagates
+    return jsonify({"error": str(e)}), 429
+
+
+@app.route("/api/demo-status")
+def api_demo_status():
+    st = demo_budget.status()
+    if st.get("demo"):
+        st["features"] = {"read": True, "qa": True, "kg_view": True, "kg_build": True,
+                          "skill_build": True, "agent": False, "eval": False, "delete": False}
+    return jsonify(st)
+
+
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -79,10 +257,37 @@ REQUEST_TIMEOUT = 15
 MAX_CHARS_FOR_MODEL = 16000
 
 
-def is_valid_url(text: str) -> bool:
+def _is_blocked_host(host: str) -> bool:
+    """True if host resolves to a private / loopback / link-local / reserved
+    address (SSRF guard). Blocks the cloud metadata IP and internal ranges so a
+    visitor-supplied URL can't make the server fetch internal endpoints."""
+    import ipaddress
+    import socket
+    host = (host or "").split("@")[-1]  # strip any userinfo
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:  # noqa: BLE001  (unresolvable → let the fetch fail normally)
+        return False
+    for info in infos:
+        ip = info[4][0]
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if (addr.is_private or addr.is_loopback or addr.is_link_local
+                or addr.is_reserved or addr.is_multicast or addr.is_unspecified):
+            return True
+    return False
+
+
+def is_valid_url(text: str, *, block_internal: bool = False) -> bool:
     try:
         parsed = urlparse(text.strip())
-        return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return False
+        if block_internal and _is_blocked_host(parsed.hostname or ""):
+            return False
+        return True
     except Exception:
         return False
 
@@ -109,6 +314,10 @@ def _pdf_title(content: bytes, url: str) -> str:
 
 
 def fetch_page(url: str) -> dict:
+    # In the public demo, refuse fetches to internal/private hosts (SSRF guard);
+    # the fetch is reachable by anonymous visitors via search / extract / ingest.
+    if demo_budget.demo_enabled() and not is_valid_url(url, block_internal=True):
+        raise ValueError("This URL is not allowed in the public demo.")
     headers = {"User-Agent": USER_AGENT,
                "Accept": "text/html,application/xhtml+xml,application/pdf,*/*"}
     resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
@@ -299,7 +508,11 @@ def _find_logo():
 
 @app.route("/")
 def index():
-    return render_template("index.html", logo_url=_find_logo())
+    return render_template(
+        "index.html", logo_url=_find_logo(),
+        demo=demo_budget.demo_enabled(),
+        demo_general=demo_budget.general_model()[1] if demo_budget.demo_enabled() else "",
+        demo_code=demo_budget.code_model()[1] if demo_budget.demo_enabled() else "")
 
 
 @app.route("/api/providers")
@@ -400,7 +613,10 @@ def api_summarize():
                 "chars": len(text),
             })
 
-        if provider == "auto":
+        if demo_budget.demo_enabled():
+            # Ignore visitor-supplied provider/model; force the cheap pin.
+            provider, model = resolve_provider_model(provider, model)
+        elif provider == "auto":
             provider = first_available_provider() or ""
 
         if provider in PROVIDERS:
@@ -454,6 +670,13 @@ def api_cache_extract():
         urls = [str(u).strip() for u in raw if str(u).strip()]
     if not urls:
         return jsonify({"error": "Provide at least one URL."}), 400
+    # Cap the batch in the demo so one request can't fan out into many blocking
+    # outbound fetches (resource/SSRF amplification); each URL is SSRF-guarded in
+    # fetch_page. Env-tunable.
+    if demo_budget.demo_enabled():
+        cap = int(os.environ.get("DEMO_EXTRACT_MAX", "5"))
+        if len(urls) > cap:
+            return jsonify({"error": f"The demo extracts at most {cap} URLs at a time."}), 400
 
     store = cached_store.get_store()
     results, errors = [], []
@@ -728,6 +951,8 @@ def api_kg_integrate():
     use_agent = bool(data.get("use_agent", False))
     provider = (data.get("provider") or "auto").strip().lower()
     model = (data.get("model") or "").strip()
+    if demo_budget.demo_enabled():
+        use_agent = False  # no unbounded deepagents fan-out for visitors
 
     extract_fn = None
     used_provider = "heuristic"
@@ -1016,6 +1241,9 @@ def api_skill_build():
             else None)
     if not (chunk_ids or text or query or tags):
         return jsonify({"error": "Provide context: chunk_ids, text, query, or tags."}), 400
+    # In the demo, skip the eval fan-out (rubric panel + triggering) so a skill
+    # build stays within a visitor's small budget; generation itself is on.
+    _demo = demo_budget.demo_enabled()
     try:
         import skill_agent
         res = skill_agent.build_skill(
@@ -1024,10 +1252,15 @@ def api_skill_build():
             goal=(data.get("goal") or "").strip(),
             provider=(data.get("provider") or "auto").strip().lower(),
             model=(data.get("model") or "").strip() or None,
-            run_rubric=bool(data.get("run_rubric", True)),
-            run_triggering=bool(data.get("run_triggering", True)),
+            run_rubric=False if _demo else bool(data.get("run_rubric", True)),
+            run_triggering=False if _demo else bool(data.get("run_triggering", True)),
             use_tools=bool(data.get("use_tools", True)),
-            backend=(data.get("backend") or "").strip().lower() or None,
+            # Force the in-process pipeline backend in demo: the claude_code
+            # backend spawns the `claude` CLI subprocess, which runs OUTSIDE the
+            # model pin and the spend meter (separate process, not wrapped) — an
+            # unmetered opus bypass. Pipeline goes through skill_generator (pinned
+            # to the cheap Qwen coder) + build_chat_model (metered).
+            backend=("pipeline" if _demo else (data.get("backend") or "").strip().lower() or None),
             judge_provider=(data.get("judge_provider") or "").strip().lower() or None,
             judge_model=(data.get("judge_model") or "").strip() or None)
         res["stats"] = skills.stats()
@@ -1375,7 +1608,7 @@ def api_rag_search():
         return jsonify({"error": "A query is required."}), 400
     # "Show more" grows k from the client; cap it so re-rank stays bounded.
     k = max(1, min(int(data.get("k") or 10), 50))
-    rerank = bool(data.get("rerank", True))
+    rerank = bool(data.get("rerank", True)) and not demo_budget.demo_enabled()
     mmr = bool(data.get("mmr", False))
     try:
         import rag
@@ -1394,7 +1627,7 @@ def api_rag_ask():
     provider = (data.get("provider") or "auto").strip().lower()
     model = (data.get("model") or "").strip()
     k = int(data.get("k") or 6)
-    rerank = bool(data.get("rerank", True))
+    rerank = bool(data.get("rerank", True)) and not demo_budget.demo_enabled()
     mmr = bool(data.get("mmr", False))
     hybrid = bool(data.get("hybrid", True))
     # Optional "focus": cached-item ids to scope the answer (drives ICL regimes).
@@ -1658,5 +1891,18 @@ def api_kg_ingest_files():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    _demo = demo_budget.demo_enabled()
+    if _demo:
+        # Ping the pinned models/embeddings once so a wrong model id (which can
+        # return empty with no error) surfaces at boot, not as blank answers.
+        if os.environ.get("DEMO_SKIP_PREFLIGHT", "").strip().lower() not in ("1", "true", "yes", "on"):
+            try:
+                demo_budget.preflight()
+            except Exception as exc:  # noqa: BLE001  (never block startup on the check)
+                print(f"[demo preflight] skipped: {exc}")
+        print(f"[demo] public demo mode — general={demo_budget.general_model()[1]} "
+              f"code={demo_budget.code_model()[1]} on :{port}")
     # threaded=True so background skill builds + job-status polls are served concurrently.
-    app.run(host="0.0.0.0", port=port, debug=True, threaded=True)
+    # In the public demo, debug MUST be off: the Werkzeug debugger exposes
+    # tracebacks and a PIN-gated code-execution console — unacceptable publicly.
+    app.run(host="0.0.0.0", port=port, debug=not _demo, threaded=True)

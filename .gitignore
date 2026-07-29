@@ -5,10 +5,16 @@ __pycache__/
 venv/
 env/
 
+# Vercel CLI link state + the .env.local it writes on `vercel link`
+.vercel/
+
 # Skills / Claude Code tooling state (machine-local, not project source)
 .claude/
 .agents/
 skills-lock.json
+
+# Public-demo runtime data (throwaway, owner-seeded; never commit)
+demo_data/
 .env
 .env.local
 .env.*.bak

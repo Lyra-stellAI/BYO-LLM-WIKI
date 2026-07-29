@@ -1,0 +1,174 @@
+Deep Agents
+Open Source
+Agent Architecture
+Introducing Rubrics: Build Agents that Evaluate and Correct Their Work
+Shrikar Seshadri
+Sydney Runkle
+June 2, 2026
+4
+min
+Go back to blog
+Create agents
+Key Takeaways
+Agents often produce outputs that head in the right direction but don't fully land on the first attempt.
+RubricMiddleware
+is how you tell the agent what "done" looks like — and make it keep going until it gets there.
+Most effective for tasks with clear, verifiable success criteria like passing tests, avoiding forbidden patterns, covering required sections.
+Agents are taking on more complex tasks than ever. More often than not, they fall short of the finish line. We've added
+RubricMiddleware
+to
+Deep Agents
+to fix that: you define a rubric, and the agent self-evaluates and iterates until it satisfies every criterion, or hits a configured cap.
+If you're familiar with
+/goal
+in
+Claude Code
+or Codex, this is a similar pattern. This implementation is a bit more flexible because evaluation is handled by a dedicated grader sub-agent that can call tools, reason over the full transcript, and return per-criterion feedback.
+The problem
+Some agent tasks have a clear definition of "done." A code refactor is finished when the test suite passes. A report is complete when every required section is covered.
+But agents don't always get there on the first try. As context grows larger, ambiguous instructions, tool misuse, and non-deterministic errors all compound — output quality deteriorates, and developers are left to diagnose and re-run tasks manually.
+How it works
+Before the agent run finishes, a separate grader sub-agent reviews it against the rubric. If everything passes, the run concludes. If anything falls short, the grader's per-criterion feedback is injected back into the conversation and the agent runs again. The loop terminates when the rubric is satisfied, or when a configured iteration limit is hit.
+The loop terminates on
+satisfied
+,
+max_iterations_reached
+,
+failed
+, or
+grader_error.
+Wiring it up
+Here's the minimal setup, broken into steps. The key idea: define a
+RubricMiddleware
+once, attach it to a deep agent, then pass a
+rubric
+string at invoke time. (If
+rubric
+is absent, the middleware does nothing.)
+1) Define
+RubricMiddleware
+This
+middleware
+adds a
+grader loop
+on top of the base agent. The grader is configured with:
+model
+: the LLM used for grading (often smaller/cheaper than your main agent model)
+system_prompt
+: instructions that define the grader’s role and what “good” looks like
+tools
+: optional tools the grader can call to gather evidence (e.g., run tests, lint, validate outputs)
+max_iterations
+: the maximum number of fix → re-grade loops before the run stops
+from
+deepagents
+import
+RubricMiddleware
+rubric_middleware = RubricMiddleware(
+model=
+"anthropic:claude-haiku-4-5"
+,
+system_prompt=
+"You are a code reviewer grading generated code against a rubric."
+,
+tools=[run_test_suite],
+max_iterations=
+5
+,
+)
+2) Pass it to a deep agent
+Your deep agent should also have its own “operating instructions.” The agent’s
+system_prompt
+tells it
+how to do the work
+, while the rubric tells the grader
+how to judge the work
+.
+In the snippet below:
+model
+: the LLM used to generate the solution
+system_prompt
+: coding conventions + constraints for the agent
+middleware
+: attaches
+rubric_middleware
+so the agent can be iteratively corrected
+from
+deepagents
+import
+create_deep_agent
+agent = create_deep_agent(
+model=
+"anthropic:claude-sonnet-4-6"
+,
+system_prompt=(
+"You are a careful Python engineer. Write correct, readable code. "
+"Follow the user’s instructions exactly."
+),
+middleware=[rubric_middleware],
+)
+3) Invoke with a human message + rubric
+At invocation time you provide:
+messages
+: the human request (and optionally prior turns)
+rubric
+: a newline-delimited checklist that the grader must mark satisfied
+from
+langchain.messages
+import
+HumanMessage
+result = agent.invoke(
+{
+"messages"
+: [
+HumanMessage(
+content=(
+"Write a Python function `find_duplicates(lst)` that returns a list of "
+"all elements that appear more than once in the input list, in the order "
+"they first appear."
+)
+)
+],
+"rubric"
+: (
+"- All tests pass in run_test_suite\n"
+"- The function is named `find_duplicates` and accepts a single list argument\n"
+),
+},
+config={
+"configurable"
+: {
+"thread_id"
+:
+"code-generation-session"
+}},
+)
+print
+(result[
+"messages"
+][-
+1
+].text)
+Rather than asking the grader to reason abstractly about correctness, we give it a run_test_suite tool to verify behavior directly. The grader can call tools to gather hard evidence before producing a verdict — and falls back to reasoning from the transcript when no tools are provided.
+Seeing it in practice
+In the code generation example above, the agent's first attempt looked correct but failed one test. The grader returned:
+"One test fails: test_unhashable. The function crashes with TypeError when encountering unhashable types like lists within the input list."
+The agent revised its implementation and passed all tests on the second iteration. The feedback isn't a generic "try again" — each criterion gets its own verdict, so the agent knows exactly what to fix.
+See the full example in
+this trace
+.
+Why it matters
+Agent outputs are probabilistic: the same prompt can succeed on one run and fall short on the next.
+RubricMiddleware
+shifts the burden of catching that variance away from the developer and onto the system.
+Instead of manually inspecting outputs and re-running failed tasks, you define what "done" looks like once and the loop handles the rest. Each retry is informed — the grader identifies exactly what's wrong and produces targeted, per-criterion feedback.
+The result: more reliable agents on tasks where correctness matters.
+Learn more
+RubricMiddleware
+is in beta and the API may change. For a full walkthrough including configuration, observability, and rubric persistence, see
+the documentation
+.
+See what your agent is really doing
+LangSmith, our agent engineering platform, helps developers debug every agent decision, eval changes, and deploy in one click.
+Try LangSmith
+Get a demo
