@@ -74,6 +74,14 @@ except ImportError:  # tracing is optional
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+# Let static assets be cached. Flask's default is Cache-Control: no-cache, which
+# means a round trip per asset per page load — on a serverless host that is a
+# function invocation each time, and it also stops a CDN from caching them at all
+# (a Vercel `headers` rule does not help: this response header wins). Safe because
+# every static URL in the templates carries ?v=<mtime> from asset_v() below, so a
+# changed file is a new URL. One day rather than a year: nothing here is
+# content-hashed, so a bad cache should age out on its own.
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 86400
 
 
 @app.context_processor

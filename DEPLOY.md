@@ -79,13 +79,19 @@ supply the pieces below.
 | `hnswlib` | installed | commented out of `requirements.txt`: it is source-only on PyPI and needs a C++ toolchain the builder lacks. `vectorstore` falls back to a numpy scan |
 
 Static assets keep being served by Flask (Vercel's `public/**` convention doesn't
-apply in services mode), but `vercel.json` gives `/static/*` a long `s-maxage` so
-the edge caches them after the first hit. The templates already cache-bust with
-`?v=<mtime>`, so a long TTL can't serve a stale bundle.
+apply in services mode), with `SEND_FILE_MAX_AGE_DEFAULT` set in `app.py` so they
+are cacheable at all — Flask's default `Cache-Control: no-cache` costs a function
+invocation per asset per page load. A `headers` rule in `vercel.json` does *not*
+work for this: the function's own header wins.
 
 The build log prints `WARNING! Build output contains no "functions" or "static"
 directory`. That is a false alarm in services mode — the service writes its output
 elsewhere — and the deployment works. Don't chase it.
+
+`vercel dev` currently fails on Windows while building the synthetic local package
+(`No such file or directory: ...app.egg-info\dependency_links.txt`). It's a local
+toolchain issue, not a config one — the cloud build is unaffected. Use
+`python app.py` for local work and a preview deployment to test the Vercel path.
 
 ---
 

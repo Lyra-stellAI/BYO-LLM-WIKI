@@ -14,16 +14,5 @@
   },
   "rewrites": [
     { "source": "/(.*)", "destination": { "service": "demo" } }
-  ],
-  "headers": [
-    {
-      "source": "/static/(.*)",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "public, max-age=3600, s-maxage=31536000, immutable"
-        }
-      ]
-    }
   ]
 }
