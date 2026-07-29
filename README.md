@@ -10,7 +10,7 @@ entities, builds topics, and writes synthesis pages. One Flask app — web UI, J
 and a `runner.py` CLI. Inspired by LangChain's *llm-wiki* deep-agents example, but it
 builds a private, on-disk library instead of syncing to a hub. **Local-first**: every
 store is plain JSON/SQLite under `data/`; cloud is opt-in.
-**Try Live Demo**:  https://byo-wiki-demo.vercel.app
+[![Try Live Demo](https://img.shields.io/badge/Try-Live%20Demo-blue)](https://byo-wiki-demo.vercel.app)
 
 ## Features
 
