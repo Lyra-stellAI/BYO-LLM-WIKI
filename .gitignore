@@ -5,8 +5,7 @@ __pycache__/
 venv/
 env/
 
-# Vercel: build output (static/ is copied here for CDN serving) + CLI link state
-public/
+# Vercel CLI link state + the .env.local it writes on `vercel link`
 .vercel/
 
 # Skills / Claude Code tooling state (machine-local, not project source)

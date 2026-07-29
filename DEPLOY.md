@@ -78,9 +78,14 @@ supply the pieces below.
 | Boot preflight | once per boot | skipped (`DEMO_SKIP_PREFLIGHT=1`); once per cold start would be three live model calls on every scale-up. Run it once by hand instead — see *Verify it's live* |
 | `hnswlib` | installed | commented out of `requirements.txt`: it is source-only on PyPI and needs a C++ toolchain the builder lacks. `vectorstore` falls back to a numpy scan |
 
-Static assets are copied to `public/static/` by the `buildCommand` in `vercel.json`
-so the CDN serves them; the `url_for('static', …)` URLs in the templates are
-unchanged. `public/` is generated at build time and gitignored.
+Static assets keep being served by Flask (Vercel's `public/**` convention doesn't
+apply in services mode), but `vercel.json` gives `/static/*` a long `s-maxage` so
+the edge caches them after the first hit. The templates already cache-bust with
+`?v=<mtime>`, so a long TTL can't serve a stale bundle.
+
+The build log prints `WARNING! Build output contains no "functions" or "static"
+directory`. That is a false alarm in services mode — the service writes its output
+elsewhere — and the deployment works. Don't chase it.
 
 ---
 
