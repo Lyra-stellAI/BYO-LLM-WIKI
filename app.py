@@ -9,6 +9,11 @@ from flask import Flask, jsonify, render_template, request, url_for
 
 import config
 import demo_budget
+import demo_store
+# Must precede every module that resolves KG_DATA_DIR at import time (kg,
+# cached_store, memory, skill_library, skill_runs): on Vercel this repoints the
+# data dir at writable /tmp storage. No-op everywhere else.
+import vercel_bootstrap  # noqa: F401
 import knowledge_graph as kg
 import cached_store
 import ingestion
@@ -90,14 +95,31 @@ def _inject_asset_version():
 # --- Public demo gate: feature blocks + rate limit + per-visitor budget keying -
 # Everything here is centralized in one before_request hook (no per-route
 # decorators) and is a no-op unless DEMO_MODE is set.
-import functools  # noqa: E402
-import threading as _threading  # noqa: E402
 import time as _time  # noqa: E402
-from collections import deque, defaultdict  # noqa: E402
 
-_demo_hits: dict = defaultdict(deque)
-_demo_inflight: dict = defaultdict(int)
-_demo_lock = _threading.Lock()
+# Counters live in demo_store (shared across instances when a Redis ledger is
+# configured, process-local otherwise) for the same reason the spend ledger does:
+# on a serverless host each instance would otherwise enforce its own limit.
+_RL_WINDOW_SEC = 60
+_RL_TTL = 120          # outlive the window; the key rotates every minute anyway
+_INFLIGHT_TTL = 300    # ceiling on a leaked slot if an instance dies mid-request
+
+
+def _rl_keys(key: str) -> tuple[str, str]:
+    """Per-visitor and global rate-limit keys for the current minute.
+
+    Bucketing by minute in the key (rather than keeping a sliding deque of
+    timestamps) is what lets the counter be a single atomic INCR. The trade-off
+    is a fixed window: a burst straddling a boundary can see up to 2x the limit
+    before it settles. Acceptable — the dollar ledger, not this, is the real cap.
+    """
+    minute = int(_time.time() // _RL_WINDOW_SEC)
+    prefix = demo_budget.key_prefix()
+    return f"{prefix}:rl:{minute}:{key}", f"{prefix}:rl:{minute}:__global__"
+
+
+def _inflight_key(key: str) -> str:
+    return f"{demo_budget.key_prefix()}:inflight:{key}"
 
 
 def _demo_key() -> str:
@@ -162,28 +184,24 @@ def _demo_gate():
         return
     if _demo_is_blocked(p, request.method):
         return jsonify({"error": "This feature is disabled in the public demo."}), 403
-    # Rate limit (per-visitor + global), sliding 60s window; limits read live.
+    # Rate limit (per-visitor + global), fixed 60s window; limits read live.
     rpm = int(os.environ.get("DEMO_RPM", "20"))
     grpm = int(os.environ.get("DEMO_GLOBAL_RPM", "120"))
-    key, now = demo_budget.get_key(), _time.time()
+    key = demo_budget.get_key()
     is_post = request.method == "POST"
-    with _demo_lock:
-        for k in (key, "__global__"):
-            dq = _demo_hits[k]
-            while dq and now - dq[0] > 60:
-                dq.popleft()
-        if len(_demo_hits[key]) >= rpm or len(_demo_hits["__global__"]) >= grpm:
-            return jsonify({"error": "Too many requests — please slow down a moment."}), 429
-        # Per-visitor in-flight cap on spending POSTs bounds the TOCTOU window
-        # (concurrent requests can otherwise each pass the budget pre-check before
-        # any records). Tracked here, decremented in _demo_after.
-        if is_post and _demo_inflight[key] >= _demo_inflight_cap():
+    visitor_hits, global_hits = demo_store.bump(
+        [(k, _RL_TTL) for k in _rl_keys(key)])
+    if visitor_hits > rpm or global_hits > grpm:
+        return jsonify({"error": "Too many requests — please slow down a moment."}), 429
+    # Per-visitor in-flight cap on spending POSTs bounds the TOCTOU window
+    # (concurrent requests can otherwise each pass the budget pre-check before
+    # any records). Claimed here, released in _demo_after / _demo_teardown.
+    if is_post:
+        slot = _inflight_key(key)
+        if demo_store.bump([(slot, _INFLIGHT_TTL)])[0] > _demo_inflight_cap():
+            demo_store.release(slot)  # we took a slot we're not going to use
             return jsonify({"error": "Too many concurrent requests — please retry in a moment."}), 429
-        _demo_hits[key].append(now)
-        _demo_hits["__global__"].append(now)
-        if is_post:
-            _demo_inflight[key] += 1
-            request.environ["_demo_inflight_key"] = key
+        request.environ["_demo_inflight_key"] = slot
     # Budget pre-check on spending requests → clean 429 when already exhausted.
     if is_post:
         try:
@@ -194,11 +212,9 @@ def _demo_gate():
 
 @app.after_request
 def _demo_after(resp):
-    key = request.environ.pop("_demo_inflight_key", None) if demo_budget.demo_enabled() else None
-    if key is not None:
-        with _demo_lock:
-            if _demo_inflight.get(key, 0) > 0:
-                _demo_inflight[key] -= 1
+    slot = request.environ.pop("_demo_inflight_key", None) if demo_budget.demo_enabled() else None
+    if slot is not None:
+        demo_store.release(slot)
     return resp
 
 
@@ -206,11 +222,9 @@ def _demo_after(resp):
 def _demo_teardown(exc):  # ensure the in-flight counter is released even on error
     if not demo_budget.demo_enabled():
         return
-    key = request.environ.pop("_demo_inflight_key", None)
-    if key is not None:
-        with _demo_lock:
-            if _demo_inflight.get(key, 0) > 0:
-                _demo_inflight[key] -= 1
+    slot = request.environ.pop("_demo_inflight_key", None)
+    if slot is not None:
+        demo_store.release(slot)
 
 
 @app.errorhandler(demo_budget.BudgetExceededError)

@@ -5,6 +5,10 @@ __pycache__/
 venv/
 env/
 
+# Vercel: build output (static/ is copied here for CDN serving) + CLI link state
+public/
+.vercel/
+
 # Skills / Claude Code tooling state (machine-local, not project source)
 .claude/
 .agents/

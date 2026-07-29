@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "mkdir -p public/static && cp -R static/. public/static/",
+  "functions": {
+    "app.py": {
+      "maxDuration": 300,
+      "excludeFiles": "{eval/**,docs/**,test_*.py,conftest.py,.venv/**,**/__pycache__/**}"
+    }
+  }
+}

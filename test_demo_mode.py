@@ -10,6 +10,7 @@ import importlib
 import os
 
 import demo_budget
+import demo_store
 
 # A full env snapshot is restored on teardown. This matters because route tests
 # reload app.py, which runs config.load_env() and would otherwise pull the real
@@ -17,6 +18,15 @@ import demo_budget
 # test files (e.g. test_memory asserts embeddings are off). Snapshot → restore
 # makes every demo test hermetic regardless of run order.
 _ENV_SNAPSHOT: dict | None = None
+
+
+# Credential pairs demo_store looks for. Blanked on every _demo_on so a developer
+# whose shell (or .env) points at a real Upstash database can't have the suite
+# write to it — and so every test runs on the deterministic memory backend unless
+# it opts in.
+_REST_VARS = ("DEMO_REDIS_REST_URL", "DEMO_REDIS_REST_TOKEN",
+              "KV_REST_API_URL", "KV_REST_API_TOKEN",
+              "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN")
 
 
 def _demo_on(**env):
@@ -29,10 +39,15 @@ def _demo_on(**env):
     os.environ["MEMORY_BACKEND"] = "local"
     for v in ("SUPABASE_DB_URL", "CACHED_STORE_DB_URL", "MEMORY_DB_URL", "SKILL_GRAPH_DB_URL"):
         os.environ[v] = ""
+    for v in _REST_VARS:
+        os.environ[v] = ""
     os.environ.setdefault("GEMINI_API_KEY", "test-key")
     os.environ.setdefault("DASHSCOPE_API_KEY", "test-key")
     for k, v in env.items():
         os.environ[k] = str(v)
+    # The ledger and the rate-limit counters live in demo_store now, so reloading
+    # demo_budget no longer clears them — clear the store explicitly instead.
+    demo_store.reset()
     importlib.reload(demo_budget)
 
 
@@ -46,6 +61,7 @@ def _demo_off():
         os.environ.update(_ENV_SNAPSHOT)
     else:
         os.environ.pop("DEMO_MODE", None)
+    demo_store.reset()
     importlib.reload(demo_budget)
 
 
@@ -389,14 +405,27 @@ def test_inflight_cap_429():
     # the budget TOCTOU window). Simulate by leaving the counter elevated.
     c, app = _client(DEMO_RPM="1000", DEMO_INFLIGHT="2")
     try:
-        with app._demo_lock:
-            app._demo_inflight["7.7.7.7"] = 2
+        slot = app._inflight_key("7.7.7.7")
+        app.demo_store.bump([(slot, 300), (slot, 300)])
         r = c.post("/api/rag/ask", json={"question": "hi"},
                    headers={}, environ_base={"REMOTE_ADDR": "7.7.7.7"})
         assert r.status_code == 429 and "concurrent" in r.get_json().get("error", "")
     finally:
-        with app._demo_lock:
-            app._demo_inflight.pop("7.7.7.7", None)
+        _demo_off()
+
+
+def test_inflight_slot_released_after_request():
+    # A rejected claim must give its slot back, and a served request must release
+    # its own — otherwise a visitor would lock themselves out after DEMO_INFLIGHT
+    # requests without a single concurrent one.
+    c, app = _client(DEMO_RPM="1000", DEMO_INFLIGHT="1")
+    try:
+        slot = app._inflight_key("8.8.8.8")
+        for _ in range(3):
+            c.post("/api/rag/ask", json={"question": "hi"},
+                   environ_base={"REMOTE_ADDR": "8.8.8.8"})
+        assert demo_store.get_float(slot) == 0, "in-flight slots must be released"
+    finally:
         _demo_off()
 
 
@@ -429,6 +458,231 @@ def test_preflight_flags_empty_reply():
         assert by_role["embeddings"]["ok"] is True
     finally:
         _demo_off()
+
+
+# --- shared ledger backend (demo_store) --------------------------------------
+class _FakeRedis:
+    """Minimal Upstash /pipeline stand-in over a dict.
+
+    Implements only the commands demo_store issues. ``calls`` records every
+    pipeline body so tests can assert on the wire format, and ``fail`` makes the
+    endpoint unreachable to exercise the fallback path."""
+
+    def __init__(self):
+        self.data: dict[str, str] = {}
+        self.calls: list = []
+        self.fail = False
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.calls.append(json)
+        if self.fail:
+            raise OSError("upstash unreachable")
+        out = []
+        for cmd in json:
+            name = str(cmd[0]).upper()
+            key = cmd[1] if len(cmd) > 1 else None
+            if name == "INCRBYFLOAT":
+                new = float(self.data.get(key, "0")) + float(cmd[2])
+                self.data[key] = f"{new:.12f}"
+                out.append({"result": self.data[key]})
+            elif name == "INCR":
+                new = int(float(self.data.get(key, "0"))) + 1
+                self.data[key] = str(new)
+                out.append({"result": new})
+            elif name == "DECR":
+                new = int(float(self.data.get(key, "0"))) - 1
+                self.data[key] = str(new)
+                out.append({"result": new})
+            elif name == "GET":
+                out.append({"result": self.data.get(key)})
+            elif name == "SET":
+                self.data[key] = str(cmd[2])
+                out.append({"result": "OK"})
+            elif name == "EXPIRE":
+                out.append({"result": 1})
+            else:
+                raise AssertionError(f"unexpected command {name}")
+
+        class _Resp:
+            @staticmethod
+            def raise_for_status():
+                return None
+
+            @staticmethod
+            def json():
+                return out
+
+        return _Resp()
+
+
+def _with_fake_redis(**env):
+    """Turn the demo on with a fake Upstash wired in. Returns (fake, restore)."""
+    import requests
+    _demo_on(**env)
+    os.environ["DEMO_REDIS_REST_URL"] = "https://fake.upstash.io"
+    os.environ["DEMO_REDIS_REST_TOKEN"] = "token"
+    fake = _FakeRedis()
+    original = requests.post
+    requests.post = fake.post
+
+    def restore():
+        requests.post = original
+        _demo_off()
+
+    return fake, restore
+
+
+def test_store_backend_selection():
+    _demo_on()
+    try:
+        assert demo_store.backend() == "memory", "no credentials -> process-local"
+        os.environ["DEMO_REDIS_REST_URL"] = "https://fake.upstash.io"
+        os.environ["DEMO_REDIS_REST_TOKEN"] = "token"
+        assert demo_store.backend() == "redis"
+    finally:
+        _demo_off()
+
+
+def test_store_never_serializes_floats_in_exponential_notation():
+    # Redis rejects "3e-05" with "value is not a valid float", and per-call demo
+    # costs are routinely that small — so this is the difference between a working
+    # ledger and one that silently never records anything.
+    fake, restore = _with_fake_redis(DEMO_VISITOR_USD="100", DEMO_GLOBAL_USD="100")
+    try:
+        demo_budget.set_key("sci")
+        demo_budget.record_usage("text-embedding-3-small", 10, 0)  # ~5e-7 USD
+        args = [str(c[2]) for body in fake.calls for c in body if c[0] == "INCRBYFLOAT"]
+        assert args, "a cost must have been sent"
+        assert not any("e" in a.lower() for a in args), args
+    finally:
+        restore()
+
+
+def test_store_ledger_is_shared_across_instances():
+    # The whole point of the Redis backend: instance B must see instance A's
+    # spend. Clearing the process-local mirror simulates a fresh instance.
+    fake, restore = _with_fake_redis(DEMO_VISITOR_USD="100", DEMO_GLOBAL_USD="0.01")
+    try:
+        demo_budget.set_key("shared")
+        demo_budget.record_usage("qwen3-coder-next", 10_000, 10_000)  # > $0.01
+        demo_store.reset()  # <- "instance B" boots with an empty mirror
+        raised = False
+        try:
+            demo_budget.check_budget()
+        except demo_budget.BudgetExceededError:
+            raised = True
+        assert raised, "a second instance must inherit the global spend"
+    finally:
+        restore()
+
+
+def test_store_redis_outage_falls_back_to_local_cap():
+    # A ledger outage must degrade to the per-instance cap (what a single-process
+    # host always had), never to an uncapped demo.
+    fake, restore = _with_fake_redis(DEMO_VISITOR_USD="0.001", DEMO_GLOBAL_USD="100")
+    try:
+        fake.fail = True
+        demo_budget.set_key("outage")
+        demo_budget.check_budget()  # fresh visitor still allowed
+        demo_budget.record_usage("qwen3-coder-next", 500, 500)  # > $0.001
+        raised = False
+        try:
+            demo_budget.check_budget()
+        except demo_budget.BudgetExceededError:
+            raised = True
+        assert raised, "local mirror must still enforce the cap when Redis is down"
+    finally:
+        restore()
+
+
+def test_store_release_clamps_at_zero():
+    # An instance that dies mid-request never releases its slot; a decrement that
+    # is allowed to go negative would quietly disable the in-flight cap.
+    fake, restore = _with_fake_redis()
+    try:
+        key = "byowiki:demo:test:inflight"
+        demo_store.release(key)
+        demo_store.release(key)
+        assert float(fake.data.get(key, 0)) >= 0, fake.data
+        assert demo_store.get_float(key) == 0
+    finally:
+        restore()
+
+
+def test_ledger_window_rolls_over():
+    # The window lives in the key, so crossing a boundary frees the budget with no
+    # coordination between instances.
+    import time as _t
+    _demo_on(DEMO_VISITOR_USD="0.001", DEMO_GLOBAL_USD="100", DEMO_WINDOW_SEC="1")
+    try:
+        demo_budget.set_key("roller")
+        demo_budget.record_usage("qwen3-coder-next", 500, 500)
+        raised = False
+        try:
+            demo_budget.check_budget()
+        except demo_budget.BudgetExceededError:
+            raised = True
+        assert raised, "visitor should be capped inside the window"
+        _t.sleep(1.05)
+        demo_budget.check_budget()  # next window: clean slate
+    finally:
+        _demo_off()
+
+
+def test_global_rate_limit_429():
+    c, app = _client(DEMO_RPM="100000", DEMO_GLOBAL_RPM="3")
+    try:
+        codes = [c.get("/api/kg/stats").status_code for _ in range(5)]
+        assert codes[0] == 200 and codes[-1] == 429, codes
+    finally:
+        _demo_off()
+
+
+# --- Vercel bootstrap --------------------------------------------------------
+def test_bootstrap_is_inert_without_vercel_env():
+    import vercel_bootstrap
+    snap = dict(os.environ)
+    try:
+        os.environ.pop("VERCEL", None)
+        assert vercel_bootstrap.on_vercel() is False
+    finally:
+        os.environ.clear()
+        os.environ.update(snap)
+
+
+def test_bootstrap_seeds_writable_dir_and_repoints():
+    import shutil
+    import tempfile
+
+    import vercel_bootstrap
+    snap = dict(os.environ)
+    seed = tempfile.mkdtemp(prefix="byowiki_seed_")
+    holder = tempfile.mkdtemp(prefix="byowiki_tmp_")
+    target = os.path.join(holder, "data")
+    try:
+        with open(os.path.join(seed, "overall.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"nodes": []}')
+        os.environ["KG_DATA_DIR"] = seed
+        os.environ["DEMO_RUNTIME_DATA_DIR"] = target
+        vercel_bootstrap._done = False
+        assert vercel_bootstrap.ensure_writable_data_dir() == target
+        assert os.environ["KG_DATA_DIR"] == target, "modules must import against the copy"
+        assert os.path.exists(os.path.join(target, "overall.json")), "seed must be copied"
+
+        # Warm instance: the marker makes a re-run skip the copy, so visitor
+        # writes already in /tmp are not silently reverted to the seed.
+        os.remove(os.path.join(target, "overall.json"))
+        os.environ["KG_DATA_DIR"] = seed
+        vercel_bootstrap._done = False
+        vercel_bootstrap.ensure_writable_data_dir()
+        assert not os.path.exists(os.path.join(target, "overall.json")), \
+            "re-seeding a warm instance would discard visitor state"
+    finally:
+        vercel_bootstrap._done = False
+        os.environ.clear()
+        os.environ.update(snap)
+        shutil.rmtree(seed, ignore_errors=True)
+        shutil.rmtree(holder, ignore_errors=True)
 
 
 def test_off_mode_is_noop():

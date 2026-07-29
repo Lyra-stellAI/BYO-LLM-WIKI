@@ -19,14 +19,20 @@ AND globally, both refreshed on a rolling window. Pricing is intentionally
 CONSERVATIVE (rounded up) — a budget guardrail should over-estimate, never
 under-estimate, and any unknown model is charged at a high default so nothing
 that escapes the model pin can spend for free.
+
+The counters live in ``demo_store``, not in module globals, because a serverless
+host runs many instances of this process and a per-instance ledger would multiply
+the cap by the instance count. See that module for the backends and the
+fail-to-local-cap behavior.
 """
 
 from __future__ import annotations
 
 import os
-import threading
 import time
 from contextvars import ContextVar
+
+import demo_store
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -114,11 +120,6 @@ class BudgetExceededError(RuntimeError):
     """Raised when the demo's global or per-visitor budget is exhausted."""
 
 
-_lock = threading.Lock()
-_window_start = time.time()
-_global_spent = 0.0
-_key_spent: dict[str, float] = {}
-
 # Per-request visitor identity (IP/session); set by app.before_request in demo.
 _KEY: ContextVar[str] = ContextVar("demo_budget_key", default="global")
 
@@ -131,12 +132,33 @@ def get_key() -> str:
     return _KEY.get()
 
 
-def _roll_window_locked() -> None:
-    global _window_start, _global_spent, _key_spent
-    if time.time() - _window_start >= _window_sec():
-        _window_start = time.time()
-        _global_spent = 0.0
-        _key_spent = {}
+# --- key layout --------------------------------------------------------------
+# The window is part of the KEY rather than state guarded by a lock: at the
+# boundary every instance independently starts writing to the next key and the
+# old one expires itself. That is what makes the rolling reset work without a
+# coordinator, and it aligns the window to the epoch (a 86400s window resets at
+# UTC midnight) instead of to whenever a particular process happened to boot.
+def key_prefix() -> str:
+    """Namespace for every demo counter — also used by app.py's rate limiter."""
+    return os.environ.get("DEMO_LEDGER_PREFIX", "byowiki:demo").strip() or "byowiki:demo"
+
+
+def _window_id() -> int:
+    return int(time.time() // _window_sec())
+
+
+def _global_key() -> str:
+    return f"{key_prefix()}:{_window_id()}:global"
+
+
+def _visitor_key(key: str) -> str:
+    return f"{key_prefix()}:{_window_id()}:v:{key}"
+
+
+def _ledger_ttl() -> float:
+    """Outlive the window itself so a clock skew between instances can't expire a
+    counter that is still being written to."""
+    return _window_sec() * 2
 
 
 def check_budget() -> None:
@@ -144,16 +166,15 @@ def check_budget() -> None:
     budget is exhausted. No-op outside demo mode."""
     if not demo_enabled():
         return
-    key = get_key()
-    with _lock:
-        _roll_window_locked()
-        if _global_spent >= _global_cap():
-            raise BudgetExceededError(
-                "The demo's shared daily budget is used up — please try again later.")
-        if _key_spent.get(key, 0.0) >= _visitor_cap():
-            raise BudgetExceededError(
-                "You've reached this demo session's usage limit. "
-                "Thanks for trying it — come back tomorrow or run your own instance.")
+    global_spent, key_spent = demo_store.get_floats(
+        [_global_key(), _visitor_key(get_key())])
+    if global_spent >= _global_cap():
+        raise BudgetExceededError(
+            "The demo's shared daily budget is used up — please try again later.")
+    if key_spent >= _visitor_cap():
+        raise BudgetExceededError(
+            "You've reached this demo session's usage limit. "
+            "Thanks for trying it — come back tomorrow or run your own instance.")
 
 
 def record_usage(model: str, in_tokens: int, out_tokens: int) -> None:
@@ -163,12 +184,8 @@ def record_usage(model: str, in_tokens: int, out_tokens: int) -> None:
     c = cost_usd(model, in_tokens, out_tokens)
     if c <= 0:
         return
-    key = get_key()
-    with _lock:
-        _roll_window_locked()
-        global _global_spent
-        _global_spent += c
-        _key_spent[key] = _key_spent.get(key, 0.0) + c
+    ttl = _ledger_ttl()
+    demo_store.add_floats([(_global_key(), c, ttl), (_visitor_key(get_key()), c, ttl)])
 
 
 def record_response(kind: str, model: str | None, resp) -> None:
@@ -204,19 +221,22 @@ def status(key: str | None = None) -> dict:
     if not demo_enabled():
         return {"demo": False}
     k = key or get_key()
-    with _lock:
-        _roll_window_locked()
-        gcap, vcap = _global_cap(), _visitor_cap()
-        return {
-            "demo": True,
-            "visitor_remaining_usd": round(max(0.0, vcap - _key_spent.get(k, 0.0)), 6),
-            "visitor_cap_usd": vcap,
-            "global_remaining_usd": round(max(0.0, gcap - _global_spent), 6),
-            "global_cap_usd": gcap,
-            "window_resets_in_sec": int(max(0, _window_sec() - (time.time() - _window_start))),
-            "general_model": general_model()[1],
-            "code_model": code_model()[1],
-        }
+    gcap, vcap = _global_cap(), _visitor_cap()
+    window = _window_sec()
+    global_spent, key_spent = demo_store.get_floats([_global_key(), _visitor_key(k)])
+    return {
+        "demo": True,
+        "visitor_remaining_usd": round(max(0.0, vcap - key_spent), 6),
+        "visitor_cap_usd": vcap,
+        "global_remaining_usd": round(max(0.0, gcap - global_spent), 6),
+        "global_cap_usd": gcap,
+        "window_resets_in_sec": int(max(0, window - (time.time() % window))),
+        "general_model": general_model()[1],
+        "code_model": code_model()[1],
+        # Which ledger is live: "redis" means the cap is shared across instances,
+        # "memory" means it is per-instance. Worth surfacing on a serverless host.
+        "ledger": demo_store.backend(),
+    }
 
 
 # --- startup preflight -------------------------------------------------------

@@ -7,10 +7,14 @@ work with zero per-visitor ingestion cost).
 
 You set **three secret keys** in the host's dashboard; everything else is preset.
 
-> **One worker, on purpose.** The spend budget and rate limiter are in-process,
-> so the start command runs **one** gunicorn worker with threads
-> (`--workers 1 --threads 8`). More workers would each keep a separate ledger and
-> multiply the spend cap. Don't raise `--workers`.
+> **One worker, on purpose.** The spend budget and rate limiter default to
+> process-local counters, so the start command runs **one** gunicorn worker with
+> threads (`--workers 1 --threads 8`). More workers would each keep a separate
+> ledger and multiply the spend cap. Don't raise `--workers`.
+>
+> The exception is a host that clones the process for you (Vercel and any other
+> serverless platform). There you can't pin the worker count, so point
+> `demo_store` at a Redis ledger instead — see the Vercel section below.
 
 ## Secrets you provide (in the dashboard)
 | Var | Purpose |
@@ -23,6 +27,60 @@ Everything else (`DEMO_MODE=1`, local backends, budget knobs) is set by the
 config files / presets below. **Leave all cloud DB URLs unset** — the app
 refuses to boot in demo mode if `SUPABASE_DB_URL` / `CACHED_STORE_DB_URL` /
 `MEMORY_DB_URL` / `SKILL_GRAPH_DB_URL` is set.
+
+---
+
+## Vercel (serverless — uses `vercel.json`)
+
+Vercel serves the Flask app as a **single function that autoscales**, which changes
+two of the demo's assumptions. Both are handled in the repo; you just have to
+supply the pieces below.
+
+1. Install the CLI (`npm i -g vercel`), then from the repo root:
+   ```bash
+   vercel link                     # create/link the project
+   vercel deploy                   # preview URL
+   vercel deploy --prod            # promote when you're happy
+   ```
+   Or connect the repo in the dashboard and set the production branch to this one.
+2. **Project → Settings → Environment Variables** — the non-secret preset:
+   ```
+   DEMO_MODE=1
+   CACHED_STORE_BACKEND=local
+   MEMORY_BACKEND=local
+   KG_DATA_DIR=demo_data
+   DEMO_RUNTIME_DATA_DIR=/tmp/byowiki-data
+   DEMO_TRUST_PROXY=1
+   DEMO_SKIP_PREFLIGHT=1
+   LANGSMITH_TRACING=false
+   PYTHONUNBUFFERED=1
+   DEMO_VISITOR_USD=0.05
+   DEMO_GLOBAL_USD=5.0
+   DEMO_RPM=20
+   DEMO_GLOBAL_RPM=120
+   ```
+   Plus the three secret keys from the table above.
+3. **Add a Redis ledger.** Storage → Marketplace → **Upstash Redis** (free tier is
+   ample; create it in `us-east-1` to sit beside the default `iad1` function
+   region). The integration injects `KV_REST_API_URL` / `KV_REST_API_TOKEN`, which
+   `demo_store` picks up on its own — no code change, no extra dependency. Confirm
+   with `curl …/api/demo-status` → `"ledger": "redis"`. Override the names with
+   `DEMO_REDIS_REST_URL` / `DEMO_REDIS_REST_TOKEN` if you'd rather bring your own.
+
+### What's different from a single-process host
+
+| | Render / Railway / Fly | Vercel |
+|---|---|---|
+| Spend cap | in-process, one worker | Redis counters shared by every instance (falls back to per-instance if Redis is unreachable — check the logs for `[demo store]`) |
+| Rate limit | 60 s sliding window | 60 s fixed window; a burst across a boundary can briefly see 2x `DEMO_RPM` |
+| Data dir | writable, survives until restart | `demo_data/` is read-only in the bundle, so `vercel_bootstrap` copies it to `/tmp` on each cold start; visitor writes die with the instance |
+| Visitor identity | peer address | `X-Forwarded-For`, which is why **`DEMO_TRUST_PROXY=1` is required** — without it every visitor collapses into one budget key |
+| Boot preflight | once per boot | skipped (`DEMO_SKIP_PREFLIGHT=1`); once per cold start would be three live model calls on every scale-up. Run it once by hand instead — see *Verify it's live* |
+| `hnswlib` | installed | commented out of `requirements.txt`: it is source-only on PyPI and needs a C++ toolchain the builder lacks. `vectorstore` falls back to a numpy scan |
+
+Static assets are copied to `public/static/` by the `buildCommand` in `vercel.json`
+so the CDN serves them; the `url_for('static', …)` URLs in the templates are
+unchanged. `public/` is generated at build time and gitignored.
 
 ---
 
@@ -75,10 +133,20 @@ not needed for a stateless demo.
 ## Verify it's live
 ```bash
 curl https://YOUR-URL/api/demo-status
-# {"demo": true, "general_model": "gemini-2.5-flash", "code_model": "qwen3-coder-next", ...}
+# {"demo": true, "general_model": "gemini-2.5-flash", "code_model": "qwen3-coder-next",
+#  "ledger": "redis", ...}
 ```
+`ledger` tells you which cap is in force: `redis` = shared across instances,
+`memory` = per-instance (correct on a one-worker host, a misconfiguration on Vercel).
+
 On boot the logs show the preflight (`[demo preflight] ok general/code/embeddings`).
 If any line says WARN, a model id or key is wrong — fix it before sharing the URL.
+Where the preflight is skipped (Vercel), run it once against the deployed keys:
+
+```bash
+DEMO_MODE=1 GEMINI_API_KEY=... DASHSCOPE_API_KEY=... OPENAI_API_KEY=... \
+python -c "import demo_budget; demo_budget.preflight()"
+```
 
 ## Tunables (optional env)
 `DEMO_VISITOR_USD` (0.05), `DEMO_GLOBAL_USD` (5.0), `DEMO_RPM` (20),
