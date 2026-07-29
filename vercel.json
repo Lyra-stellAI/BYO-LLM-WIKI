@@ -1,10 +1,29 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "mkdir -p public/static && cp -R static/. public/static/",
-  "functions": {
-    "app.py": {
-      "maxDuration": 300,
-      "excludeFiles": "{eval/**,docs/**,test_*.py,conftest.py,.venv/**,**/__pycache__/**}"
+  "services": {
+    "demo": {
+      "root": ".",
+      "entrypoint": "app:app",
+      "functions": {
+        "app.py": {
+          "maxDuration": 300,
+          "excludeFiles": "{eval/**,docs/**,test_*.py,conftest.py,.venv/**,**/__pycache__/**}"
+        }
+      }
     }
-  }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": { "service": "demo" } }
+  ],
+  "headers": [
+    {
+      "source": "/static/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=3600, s-maxage=31536000, immutable"
+        }
+      ]
+    }
+  ]
 }
