@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from io import BytesIO
@@ -267,7 +268,160 @@ def generate_ai_summary(provider: str, model: str, title: str, url: str, text: s
     raise ValueError(f"Unknown provider: {provider}")
 
 
+# --- Optional You.com web-search backend -------------------------------------
+# The default backend is DuckDuckGo (ddgs) — keyless, zero setup. Setting
+# WEB_SEARCH_PROVIDER=youcom routes web_search() through You.com's hosted MCP
+# server instead, which keeps that same zero-setup property via the keyless
+# free profile (https://api.you.com/mcp?profile=free — no API key needed);
+# YDC_API_KEY switches to the authenticated endpoint. Any You.com failure
+# falls back to DuckDuckGo below, so search always answers.
+
+YOUCOM_MCP_URL_FREE = "https://api.you.com/mcp?profile=free"
+YOUCOM_MCP_URL_AUTHED = "https://api.you.com/mcp"
+YOUCOM_TIMEOUT = 20  # seconds, per MCP HTTP request
+
+
+def _youcom_mcp_url() -> str:
+    """You.com MCP endpoint: YOUCOM_MCP_URL override, else the keyless free
+    profile or the authenticated endpoint when YDC_API_KEY is set."""
+    override = os.environ.get("YOUCOM_MCP_URL", "").strip()
+    if override:
+        return override
+    if os.environ.get("YDC_API_KEY", "").strip():
+        return YOUCOM_MCP_URL_AUTHED
+    return YOUCOM_MCP_URL_FREE
+
+
+def _mcp_parse_body(body: str) -> list[dict]:
+    """Decode an MCP Streamable-HTTP response body into JSON-RPC messages.
+
+    The server answers either with a bare JSON object or with an SSE stream
+    whose ``data:`` lines each carry one message (progress notifications can
+    precede the result). Frames are split on LF/CRLF only: ``str.splitlines``
+    would also split on U+0085/U+2028 inside result text and shred non-ASCII
+    payloads. Undecodable frames are skipped, never fatal here — the caller
+    decides what to do when no result message is found.
+    """
+    text = (body or "").strip()
+    if not text:
+        return []
+    try:
+        obj = json.loads(text)
+        return [obj] if isinstance(obj, dict) else []
+    except ValueError:
+        pass
+    messages = []
+    for line in re.split(r"\r\n|\n", text):
+        line = line.strip()
+        if line.startswith("data:"):
+            try:
+                messages.append(json.loads(line[len("data:"):].strip()))
+            except ValueError:
+                continue
+    return messages
+
+
+def _youcom_search(query: str, max_results: int = 8) -> list[dict]:
+    """Search via You.com's hosted MCP server (Streamable HTTP JSON-RPC).
+
+    Speaks the protocol by hand over ``requests`` — initialize, the
+    initialized notification, then ``tools/call you-search`` — and maps the
+    results to the same ``{title, url, snippet}`` shape the DuckDuckGo
+    backend returns, so callers can treat the two interchangeably. Raises on
+    any failure (network, JSON-RPC error, ``isError`` result); web_search()
+    then falls back to DuckDuckGo.
+    """
+    url = _youcom_mcp_url()
+    api_key = os.environ.get("YDC_API_KEY", "").strip()
+    headers = {"Content-Type": "application/json",
+               "Accept": "application/json, text/event-stream"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    def post(payload: dict) -> list[dict]:
+        resp = requests.post(url, json=payload, headers=dict(headers),
+                             timeout=YOUCOM_TIMEOUT)
+        resp.raise_for_status()
+        return _mcp_parse_body(resp.text)
+
+    # 1) initialize — the server may assign a session via Mcp-Session-Id.
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "byo-llm-wiki", "version": "1.0"}}}
+    resp = requests.post(url, json=init, headers=dict(headers),
+                         timeout=YOUCOM_TIMEOUT)
+    resp.raise_for_status()
+    session_id = resp.headers.get("Mcp-Session-Id")
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+
+    # 2) notifications/initialized — a 202 with an empty body is the ack.
+    post({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    # 3) tools/call you-search — result frames may omit the JSON-RPC id.
+    call = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "you-search",
+                       "arguments": {"query": query, "count": max_results}}}
+    result = None
+    rpc_error = None
+    for msg in post(call):
+        if not isinstance(msg, dict):
+            continue
+        if "result" in msg:
+            result = msg["result"]
+        elif "error" in msg:
+            rpc_error = msg["error"]
+    if rpc_error is not None:
+        raise RuntimeError(f"You.com MCP error: {rpc_error}")
+    if not isinstance(result, dict):
+        raise RuntimeError("You.com MCP returned no result message")
+
+    content = result.get("content") or []
+    text = next((c.get("text") for c in content
+                 if isinstance(c, dict) and c.get("type") == "text"), None)
+    if result.get("isError") or not text:
+        raise RuntimeError(f"You.com search failed: {text or 'no content'}")
+
+    # you-search returns {"results": {"web": [ {title, url, description,
+    # highlights?}, … ]}} as a JSON string; be tolerant of a bare list too.
+    try:
+        payload = json.loads(text)
+    except ValueError as exc:
+        raise RuntimeError(f"You.com search returned unparseable output: {exc}") from exc
+    if isinstance(payload, dict):
+        web = (payload.get("results") or {}).get("web") or []
+    elif isinstance(payload, list):
+        web = payload
+    else:
+        web = []
+
+    results = []
+    for item in web:
+        if not isinstance(item, dict):
+            continue
+        snippet = item.get("description") or ""
+        if not snippet:
+            highlights = item.get("highlights") or item.get("snippets") or []
+            if highlights:
+                snippet = highlights[0] if isinstance(highlights[0], str) \
+                    else str(highlights[0])
+        results.append({
+            "title": item.get("title", ""),
+            "url": item.get("url", ""),
+            "snippet": snippet,
+        })
+    return results
+
+
 def web_search(query: str, max_results: int = 8) -> list[dict]:
+    # WEB_SEARCH_PROVIDER=youcom opts into the You.com backend above; any
+    # other value (or unset) keeps the DuckDuckGo default. A You.com failure
+    # falls back to DuckDuckGo so search keeps answering either way.
+    if os.environ.get("WEB_SEARCH_PROVIDER", "").strip().lower() == "youcom":
+        try:
+            return _youcom_search(query, max_results)
+        except Exception:  # noqa: BLE001 — fail open to the DuckDuckGo path
+            pass
     if DDGS is None:
         return []
     results = []

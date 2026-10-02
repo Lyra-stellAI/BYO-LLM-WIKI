@@ -307,6 +307,7 @@ the complete list. Common extras:
 | `SKILL_BACKEND` | skill generator: `pipeline` (in-process) or `claude_code` (CLI subprocess). |
 | `SKILL_GRAPH_CHECKPOINT` | LangGraph checkpoints: `sqlite` (default) / `postgres` / `memory`. |
 | `MCP_ENABLED` / `MCP_ALLOW_WRITES` | enable external MCP servers; allow (gated) writes. |
+| `WEB_SEARCH_PROVIDER` | Read-tab web-search backend: unset = DuckDuckGo (default), `youcom` = You.com MCP (keyless; `YDC_API_KEY` optional). |
 | `PORT` | bind port (default 5000). |
 
 ## Project layout
