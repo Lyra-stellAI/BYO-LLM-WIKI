@@ -56,6 +56,47 @@ reach Supabase from a locked-down environment.
 | `SUPABASE_ACCESS_TOKEN` / `SUPABASE_PROJECT_REF` | Supabase MCP auth + scope. |
 | `GITHUB_API_KEY` | GitHub MCP auth. |
 
+## Parallel web search and page excerpts
+
+The read-only `parallel` preset connects to
+[Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp) over
+Streamable HTTP at `https://search.parallel.ai/mcp`. It provides `web_search`
+and `web_fetch` without a Parallel account or API key. Anonymous search uses
+Fast mode and is intended for exploration and light use, with rate limits.
+Queries and requested URLs are sent to Parallel when you call these tools.
+
+From the repository root, after the normal app setup, install the optional MCP
+dependencies and enable the preset:
+
+```bash
+pip install 'langchain-mcp-adapters>=0.3.0' 'mcp>=1.0.0'
+export MCP_ENABLED=parallel
+python runner.py --mode mcp-list
+```
+
+The listing should show `parallel` as active and expose `web_search` and
+`web_fetch` as read tools. To keep other servers enabled, include their names
+in the comma-separated list, for example `MCP_ENABLED=supabase,parallel`.
+With `MCP_ENABLED` unset, no external MCP servers are enabled.
+
+Search for sources, then fetch a relevant URL and stage its excerpts in the
+knowledge graph:
+
+```bash
+python runner.py --mode mcp-call --server parallel --tool web_search \
+  --args '{"objective":"Find how MCP clients discover and invoke tools.","search_queries":["Model Context Protocol tool discovery invocation"]}'
+python runner.py --mode mcp-ingest --server parallel --tool web_fetch \
+  --args '{"urls":["https://modelcontextprotocol.io/specification/2025-06-18/server/tools"],"objective":"How clients discover and invoke tools"}' \
+  --title 'MCP tool discovery and invocation'
+```
+
+Replace the fetch URL with a source from your search. `mcp-ingest` stores the
+serialized response, including source URLs and excerpts, as staging chunks.
+Review them in the Knowledge Graph tab before clicking **Integrate**. This
+does not build the separate RAG vector index. Enabled read tools also join the
+curating agent and skill-builder through the existing MCP client; those agents
+still need their usual model setup.
+
 ## Status
 Implemented: client core, skill-builder + ingestion hooks, the MCP server, and
 gated writes. Validated locally end-to-end (our MCP client ↔ our MCP server over
