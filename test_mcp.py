@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+from unittest.mock import patch
 
 os.environ["KG_DATA_DIR"] = (os.environ.get("BYOWIKI_TEST_DATA_DIR")
                              or tempfile.mkdtemp(prefix="mcp_test_"))
@@ -51,6 +52,41 @@ def test_enabled_and_spec_resolution():
         assert "supabase" in mcp_config.client_config()
     finally:
         _restore(saved)
+
+
+def test_parallel_is_opt_in_and_keyless():
+    with patch.dict(os.environ, {}, clear=True):
+        assert mcp_config.client_config() == {}
+        assert not mcp_config.status()["servers"]["parallel"]["enabled"]
+        os.environ["MCP_ENABLED"] = "parallel"
+        spec = mcp_config.client_config()["parallel"]
+        assert spec["transport"] == "streamable_http"
+        assert spec["url"] == "https://search.parallel.ai/mcp"
+        assert "BYO-LLM-WIKI" in spec["headers"]["User-Agent"]
+        assert "Authorization" not in spec["headers"]
+        assert mcp_config.status()["servers"]["parallel"]["missing_vars"] == []
+        assert not mcp_config.is_write_tool("parallel", "web_search")
+        assert not mcp_config.is_write_tool("parallel", "web_fetch")
+
+
+def test_parallel_config_override_preserves_other_servers():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "mcp.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"servers": {"parallel": {
+                "url": "https://example.com/custom-mcp",
+                "headers": {"Authorization": "Bearer ${CUSTOM_MCP_TOKEN}"},
+            }}}, fh)
+        with patch.dict(os.environ, {
+            "MCP_ENABLED": "parallel,fetch", "MCP_CONFIG": path,
+            "CUSTOM_MCP_TOKEN": "test-token",
+        }, clear=True):
+            cfg = mcp_config.client_config()
+            assert set(cfg) == {"parallel", "fetch"}
+            assert cfg["parallel"]["url"] == "https://example.com/custom-mcp"
+            assert cfg["parallel"]["headers"]["Authorization"] == "Bearer test-token"
+            assert cfg["fetch"]["command"] == "uvx"
+            assert not mcp_config.is_writable_server("parallel")
 
 
 def test_write_tool_classification():

@@ -47,6 +47,13 @@ DEFAULT_SERVERS: dict[str, dict] = {
         "transport": "stdio", "command": "uvx", "args": ["mcp-server-fetch"],
         "writable": False, "requires": [],
     },
+    # Keyless web search + page excerpts. Opt in with MCP_ENABLED=parallel.
+    "parallel": {
+        "transport": "streamable_http",
+        "url": "https://search.parallel.ai/mcp",
+        "headers": {"User-Agent": "BYO-LLM-WIKI (https://github.com/Lyra-stellAI/BYO-LLM-WIKI)"},
+        "writable": False, "requires": [],
+    },
 }
 
 _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")

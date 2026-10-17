@@ -292,7 +292,10 @@ export MCP_ENABLED=supabase SUPABASE_ACCESS_TOKEN=… SUPABASE_PROJECT_REF=…
 python runner.py --mode mcp-list
 ```
 
-See `docs/mcp-proposal.md` for the full design.
+For free web search and page excerpts with no Parallel account or API key,
+set `MCP_ENABLED=parallel`. Search uses Fast mode; the preset stays disabled
+until enabled. See the [Parallel setup and ingestion example](docs/mcp-proposal.md#parallel-web-search-and-page-excerpts)
+or the [full MCP design](docs/mcp-proposal.md).
 
 ## Configuration
 
